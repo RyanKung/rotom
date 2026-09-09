@@ -115,6 +115,9 @@ impl AppState {
 
     /// Rewrites known unsupported Anthropic model ids to the configured fallback.
     pub(crate) fn rewrite_model(&self, model: &mut String) {
+        if provider_for_model(model).is_none() {
+            return;
+        }
         let Some(fallback) = self.model_fallback.as_deref() else {
             return;
         };
@@ -150,7 +153,7 @@ impl AppState {
     }
 
     pub(crate) fn upstream_for_model(&self, model: &str) -> Option<&UpstreamState> {
-        let provider = provider_for_model(model);
+        let provider = provider_for_model(model)?;
         self.upstreams
             .iter()
             .find(|upstream| upstream.provider == provider)

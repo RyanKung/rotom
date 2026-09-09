@@ -10,6 +10,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+const REMOVED_CURSOR_PROVIDER: &str = "cursor";
+
 /// Upstream OAuth provider used by stored credentials and runtime requests.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -21,8 +23,6 @@ pub enum Provider {
     Grok,
     /// Kiro credentials imported from the official local IDE or CLI stores.
     Kiro,
-    /// Cursor browser login and `AgentService` credentials.
-    Cursor,
 }
 
 impl Provider {
@@ -33,7 +33,6 @@ impl Provider {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::Kiro => "kiro",
-            Self::Cursor => "cursor",
         }
     }
 
@@ -44,7 +43,6 @@ impl Provider {
             Self::Codex => "Codex",
             Self::Grok => "Grok",
             Self::Kiro => "Kiro",
-            Self::Cursor => "Cursor",
         }
     }
 }
@@ -63,7 +61,6 @@ impl FromStr for Provider {
             "codex" | "openai-codex" | "openai" => Ok(Self::Codex),
             "grok" | "xai" | "xai-oauth" | "grok-oauth" => Ok(Self::Grok),
             "kiro" | "kiro-cli" | "kiro-desktop" => Ok(Self::Kiro),
-            "cursor" => Ok(Self::Cursor),
             other => Err(Error::config(format!("unknown provider: {other}"))),
         }
     }
@@ -96,6 +93,14 @@ struct AuthFile {
 }
 
 impl AuthFile {
+    fn empty() -> Self {
+        Self {
+            version: 2,
+            active_provider: Provider::default(),
+            providers: BTreeMap::new(),
+        }
+    }
+
     fn single(credentials: Credentials) -> Self {
         let provider = credentials.provider;
         let mut providers = BTreeMap::new();
@@ -269,11 +274,47 @@ impl AuthStore {
 }
 
 fn parse_auth_file(raw: &str) -> Result<AuthFile> {
-    if let Ok(file) = serde_json::from_str::<AuthFile>(raw) {
-        return Ok(file);
+    let mut value = serde_json::from_str::<serde_json::Value>(raw)?;
+    if value.get("providers").is_some() {
+        ignore_removed_provider(&mut value, REMOVED_CURSOR_PROVIDER);
+        return serde_json::from_value(value).map_err(Into::into);
     }
-    let credentials = serde_json::from_str::<Credentials>(raw)?;
+    if value.get("provider").and_then(serde_json::Value::as_str) == Some(REMOVED_CURSOR_PROVIDER) {
+        return Ok(AuthFile::empty());
+    }
+    let credentials = serde_json::from_value::<Credentials>(value)?;
     Ok(AuthFile::single(credentials))
+}
+
+fn ignore_removed_provider(value: &mut serde_json::Value, removed_provider: &str) {
+    let Some(file) = value.as_object_mut() else {
+        return;
+    };
+    let active_provider_was_removed = file
+        .get("active_provider")
+        .and_then(serde_json::Value::as_str)
+        == Some(removed_provider);
+    let fallback_provider = file
+        .get_mut("providers")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|providers| {
+            providers.retain(|provider, credentials| {
+                provider != removed_provider
+                    && credentials
+                        .get("provider")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(removed_provider)
+            });
+            providers.keys().next().cloned()
+        });
+    if active_provider_was_removed {
+        file.insert(
+            "active_provider".to_owned(),
+            serde_json::Value::String(
+                fallback_provider.unwrap_or_else(|| Provider::default().as_str().to_owned()),
+            ),
+        );
+    }
 }
 
 /// Loads and saves the persisted application configuration file.
@@ -320,7 +361,7 @@ impl AppConfigStore {
     /// Returns an error when the file exists but cannot be read or decoded.
     pub fn load(&self) -> Result<Option<AppConfig>> {
         match fs::read_to_string(&self.path) {
-            Ok(raw) => Ok(Some(serde_json::from_str(&raw)?)),
+            Ok(raw) => Ok(Some(parse_app_config(&raw)?)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
@@ -360,6 +401,16 @@ impl AppConfigStore {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+fn parse_app_config(raw: &str) -> Result<AppConfig> {
+    let mut value = serde_json::from_str::<serde_json::Value>(raw)?;
+    if value.get("provider").and_then(serde_json::Value::as_str) == Some(REMOVED_CURSOR_PROVIDER) {
+        if let Some(config) = value.as_object_mut() {
+            config.remove("provider");
+        }
+    }
+    serde_json::from_value(value).map_err(Into::into)
 }
 
 /// Returns the current Unix timestamp in seconds.
@@ -440,12 +491,112 @@ mod tests {
     }
 
     #[test]
-    fn cursor_provider_does_not_accept_local_cli_aliases() {
-        assert_eq!(Provider::from_str("cursor").unwrap(), Provider::Cursor);
-        let local_agent_alias = ["cursor", "agent"].join("-");
-        let local_cli_alias = ["cursor", "cli"].join("-");
-        assert!(Provider::from_str(&local_agent_alias).is_err());
-        assert!(Provider::from_str(&local_cli_alias).is_err());
+    fn removed_cursor_provider_is_rejected() {
+        assert!(Provider::from_str("cursor").is_err());
+    }
+
+    #[test]
+    fn removed_cursor_credentials_are_ignored_without_hiding_supported_providers() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "version": 2,
+                "active_provider": "cursor",
+                "providers": {
+                    "codex": {
+                        "provider": "codex",
+                        "access_token": "codex-access",
+                        "refresh_token": "codex-refresh",
+                        "expires_at": 123,
+                        "account_id": "codex-account"
+                    },
+                    "cursor": {
+                        "provider": "cursor",
+                        "access_token": "cursor-access",
+                        "refresh_token": "cursor-refresh",
+                        "expires_at": 456,
+                        "account_id": "cursor-account"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+        let credentials = store.load_all().unwrap();
+
+        assert_eq!(store.load().unwrap().unwrap().provider, Provider::Codex);
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].provider, Provider::Codex);
+    }
+
+    #[test]
+    fn removed_cursor_only_credentials_behave_as_logged_out() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "version": 2,
+                "active_provider": "cursor",
+                "providers": {
+                    "cursor": {
+                        "provider": "cursor",
+                        "access_token": "cursor-access",
+                        "refresh_token": "cursor-refresh",
+                        "expires_at": 456,
+                        "account_id": "cursor-account"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+
+        assert!(store.load_all().unwrap().is_empty());
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn removed_legacy_cursor_credentials_behave_as_logged_out() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "provider": "cursor",
+                "access_token": "cursor-access",
+                "refresh_token": "cursor-refresh",
+                "expires_at": 456,
+                "account_id": "cursor-account"
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+
+        assert!(store.load_all().unwrap().is_empty());
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn removed_cursor_runtime_default_becomes_unselected() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+                "bind_host": "127.0.0.1",
+                "bind_port": 14550,
+                "provider": "cursor"
+            }"#,
+        )
+        .unwrap();
+        let config = AppConfigStore::new(path).load().unwrap().unwrap();
+
+        assert_eq!(config.bind_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(config.bind_port, Some(14550));
+        assert_eq!(config.provider, None);
     }
 
     #[test]

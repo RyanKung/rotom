@@ -45,6 +45,29 @@ fn model_support_normalization_accepts_provider_prefixes() {
     );
 }
 
+#[test]
+fn removed_cursor_models_cannot_fall_back_to_another_upstream() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let state = AppState::new_with_model_fallback(
+        TokenManager::new(
+            store,
+            CodexOAuthClient::new_with_token_url(http.clone(), "http://token.invalid"),
+        ),
+        CodexClient::new(http, "http://codex.invalid"),
+        None,
+        ModelList::from_ids(["gpt-5.5"]),
+        Some("gpt-5.5".into()),
+    );
+    let mut model = "cursor/sonnet-4".to_owned();
+
+    state.rewrite_model(&mut model);
+
+    assert_eq!(model, "cursor/sonnet-4");
+    assert!(state.upstream_for_model(&model).is_none());
+}
+
 async fn refresh_handler(Form(form): Form<HashMap<String, String>>) -> Json<Value> {
     assert_eq!(form.get("refresh_token").unwrap(), "old_refresh");
     Json(json!({

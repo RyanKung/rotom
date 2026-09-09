@@ -2,7 +2,7 @@ use crate::{
     Error, Result,
     codex::kiro::{DEFAULT_KIRO_BASE_URL, kiro_headers},
     config::{Credentials, Provider},
-    oauth::{CURSOR_API_BASE_URL, XAI_API_BASE_URL},
+    oauth::XAI_API_BASE_URL,
 };
 use reqwest::header::{
     ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
@@ -13,7 +13,6 @@ const CODEX_PRIORITY_SERVICE_TIER: &str = "priority";
 const CODEX_UPSTREAM: CodexUpstream = CodexUpstream;
 const GROK_UPSTREAM: GrokUpstream = GrokUpstream;
 const KIRO_UPSTREAM: KiroUpstream = KiroUpstream;
-const CURSOR_UPSTREAM: CursorUpstream = CursorUpstream;
 
 /// Default upstream base URL for `Codex` response requests.
 pub const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
@@ -193,51 +192,11 @@ impl UpstreamProvider for KiroUpstream {
     fn prepare_request(&self, _body: &mut Value) {}
 }
 
-struct CursorUpstream;
-
-impl UpstreamProvider for CursorUpstream {
-    fn provider(&self) -> Provider {
-        Provider::Cursor
-    }
-
-    fn default_base_url(&self) -> &'static str {
-        CURSOR_API_BASE_URL
-    }
-
-    fn responses_url(&self, base_url: &str) -> String {
-        base_url.trim_end_matches('/').to_owned()
-    }
-
-    fn response_resource_url(&self, _base_url: &str, _response_id: &str) -> Option<String> {
-        None
-    }
-
-    fn resource_capabilities(&self) -> ResponseResourceCapabilities {
-        ResponseResourceCapabilities {
-            retrieve: ResponseResourceCapability::Unsupported,
-            delete: ResponseResourceCapability::Unsupported,
-            cancel: ResponseResourceCapability::Unsupported,
-            list_input_items: ResponseResourceCapability::Unsupported,
-        }
-    }
-
-    fn response_creation_strategy(&self) -> ResponseCreationStrategy {
-        ResponseCreationStrategy::NativeResponses
-    }
-
-    fn headers(&self, credentials: &Credentials) -> Result<HeaderMap> {
-        cursor_headers(credentials)
-    }
-
-    fn prepare_request(&self, _body: &mut Value) {}
-}
-
 pub(super) fn adapter_for_provider(provider: Provider) -> &'static dyn UpstreamProvider {
     match provider {
         Provider::Codex => &CODEX_UPSTREAM,
         Provider::Grok => &GROK_UPSTREAM,
         Provider::Kiro => &KIRO_UPSTREAM,
-        Provider::Cursor => &CURSOR_UPSTREAM,
     }
 }
 
@@ -398,30 +357,6 @@ fn grok_auth_headers(credentials: &Credentials) -> Result<HeaderMap> {
         header_value(&format!("Bearer {}", credentials.access_token))?,
     );
     headers.insert(USER_AGENT, HeaderValue::from_static("rotom"));
-    Ok(headers)
-}
-
-/// Builds HTTP headers for authenticated Cursor API requests.
-///
-/// Cursor runtime support is not OpenAI-compatible yet, but keeping this
-/// header builder provider-scoped avoids reusing Codex or Grok header shapes
-/// by accident.
-pub fn cursor_headers(credentials: &Credentials) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        header_value(&format!("Bearer {}", credentials.access_token))?,
-    );
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    headers.insert(
-        HeaderName::from_static("x-ghost-mode"),
-        HeaderValue::from_static("true"),
-    );
-    headers.insert(
-        HeaderName::from_static("x-cursor-client-version"),
-        HeaderValue::from_static("extension-rotom"),
-    );
     Ok(headers)
 }
 

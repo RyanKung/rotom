@@ -148,7 +148,7 @@ fn upstream_for_model<'a>(
     upstreams: &'a [UpstreamState],
     model: &str,
 ) -> Option<&'a UpstreamState> {
-    let provider = provider_for_model(model);
+    let provider = provider_for_model(model)?;
     upstreams
         .iter()
         .find(|upstream| upstream.provider == provider)

@@ -16,6 +16,7 @@ pub const OPENCLAW_CODEX_MODELS: &[&str] = &[
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
+    "gpt-6-astra",
 ];
 
 /// Default Grok model identifiers exposed by the project.
@@ -39,14 +40,6 @@ pub const KIRO_MODELS: &[&str] = &[
     "qwen3-coder-next",
 ];
 
-/// Default Cursor model identifiers exposed by rotom.
-pub const CURSOR_MODELS: &[&str] = &[
-    "cursor/auto",
-    "cursor/gpt-5",
-    "cursor/sonnet-4",
-    "cursor/sonnet-4-thinking",
-];
-
 const HIGHLIGHT_MODEL_LIMIT: usize = 4;
 
 /// Resolves the default model identifiers into a trimmed, de-duplicated list.
@@ -62,7 +55,6 @@ pub fn resolve_model_ids_for_provider(provider: Provider) -> Vec<String> {
         Provider::Codex => OPENCLAW_CODEX_MODELS,
         Provider::Grok => GROK_MODELS,
         Provider::Kiro => KIRO_MODELS,
-        Provider::Cursor => CURSOR_MODELS,
     };
     normalize_model_ids(ids.iter().map(ToString::to_string))
 }
@@ -82,12 +74,9 @@ pub fn highlight_model_ids_for_provider(provider: Provider, available: &[String]
             .then_with(|| left_id.cmp(right_id))
     });
 
-    let mut seen_groups = HashSet::new();
     let mut highlights = Vec::new();
     for (id, _) in ranked {
-        if seen_groups.insert(highlight_group_key(provider, &id)) {
-            highlights.push(id);
-        }
+        highlights.push(id);
         if highlights.len() >= HIGHLIGHT_MODEL_LIMIT {
             break;
         }
@@ -129,12 +118,15 @@ pub fn resolve_model_list_for_provider(provider: Provider) -> Result<ModelList> 
     ))
 }
 
-/// Returns the provider implied by a model identifier.
+/// Returns the supported provider implied by a model identifier.
+///
+/// Models that belonged to the removed Cursor integration return `None` so
+/// callers cannot accidentally route them to a different upstream.
 #[must_use]
-pub fn provider_for_model(model: &str) -> Provider {
+pub fn provider_for_model(model: &str) -> Option<Provider> {
     let normalized = model.strip_prefix("openai-codex/").unwrap_or(model);
-    if normalized.starts_with("cursor/") {
-        return Provider::Cursor;
+    if removed_cursor_model(normalized) {
+        return None;
     }
     let normalized = normalized
         .strip_prefix("xai/")
@@ -142,7 +134,7 @@ pub fn provider_for_model(model: &str) -> Provider {
         .or_else(|| normalized.strip_prefix("kiro/"))
         .unwrap_or(normalized);
     if normalized.starts_with("grok-") {
-        Provider::Grok
+        Some(Provider::Grok)
     } else if normalized == "auto"
         || normalized.starts_with("claude-")
         || normalized.starts_with("deepseek-")
@@ -150,12 +142,14 @@ pub fn provider_for_model(model: &str) -> Provider {
         || normalized.starts_with("glm-")
         || normalized.starts_with("qwen")
     {
-        Provider::Kiro
-    } else if normalized.starts_with("sonnet-") || normalized == "opus" {
-        Provider::Cursor
+        Some(Provider::Kiro)
     } else {
-        Provider::Codex
+        Some(Provider::Codex)
     }
+}
+
+fn removed_cursor_model(model: &str) -> bool {
+    model.starts_with("cursor/") || model.starts_with("sonnet-") || model == "opus"
 }
 
 /// Builds a [`ModelList`] containing all models for the supplied providers.
@@ -185,7 +179,6 @@ const fn model_owner(provider: Provider) -> &'static str {
         Provider::Codex => "openai-codex",
         Provider::Grok => "xai",
         Provider::Kiro => "kiro",
-        Provider::Cursor => "cursor",
     }
 }
 
@@ -200,8 +193,7 @@ fn normalize_model_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
 
 fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
     let normalized = id
-        .strip_prefix("cursor/")
-        .or_else(|| id.strip_prefix("openai-codex/"))
+        .strip_prefix("openai-codex/")
         .or_else(|| id.strip_prefix("xai/"))
         .or_else(|| id.strip_prefix("grok/"))
         .or_else(|| id.strip_prefix("kiro/"))
@@ -222,7 +214,6 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
             }
         }
         Provider::Kiro => kiro_family_rank(normalized)?,
-        Provider::Cursor => cursor_family_rank(normalized)?,
     };
     let effort = effort_rank(normalized);
 
@@ -315,24 +306,6 @@ fn kiro_family_rank(id: &str) -> Option<u16> {
     }
 }
 
-fn cursor_family_rank(id: &str) -> Option<u16> {
-    if id.contains("claude") && id.contains("fable") {
-        Some(120)
-    } else if id.contains("claude") && id.contains("opus") {
-        Some(110)
-    } else if id.starts_with("gpt-") {
-        Some(105)
-    } else if id.contains("claude") && id.contains("sonnet") {
-        Some(95)
-    } else if id.starts_with("sonnet-") {
-        Some(92)
-    } else if id.starts_with("composer-") {
-        Some(85)
-    } else {
-        None
-    }
-}
-
 fn effort_rank(id: &str) -> u16 {
     let mut rank: u16 = 10;
     if id.contains("medium") {
@@ -366,38 +339,9 @@ fn highlight_score(provider: Provider, major: u16, minor: u16, family: u16, effo
             10_000_000 + version_score + u32::from(family) * 10 + u32::from(effort)
         }
         Provider::Kiro => u32::from(family) * 1_000 + u32::from(major) * 10 + u32::from(minor),
-        Provider::Cursor => {
-            u32::from(family) * 1_000_000
-                + u32::from(major) * 10_000
-                + u32::from(minor) * 100
-                + u32::from(effort)
-        }
         Provider::Codex | Provider::Grok => {
             version_score + u32::from(family) * 10 + u32::from(effort)
         }
-    }
-}
-
-fn highlight_group_key(provider: Provider, id: &str) -> String {
-    if provider != Provider::Cursor {
-        return id.to_owned();
-    }
-
-    let normalized = id.strip_prefix("cursor/").unwrap_or(id);
-    if normalized.starts_with("gpt-") {
-        "cursor:gpt".to_owned()
-    } else if normalized.contains("claude") && normalized.contains("fable") {
-        "cursor:claude-fable".to_owned()
-    } else if normalized.contains("claude") && normalized.contains("opus") {
-        "cursor:claude-opus".to_owned()
-    } else if normalized.contains("claude") && normalized.contains("sonnet")
-        || normalized.starts_with("sonnet-")
-    {
-        "cursor:claude-sonnet".to_owned()
-    } else if normalized.starts_with("composer-") {
-        "cursor:composer".to_owned()
-    } else {
-        normalized.to_owned()
     }
 }
 
@@ -426,9 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn defaults_include_gpt_56_models() {
+    fn defaults_include_current_codex_models() {
         let ids = resolve_model_ids();
 
+        assert!(ids.iter().any(|id| id == "gpt-6-astra"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-sol"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-terra"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-luna"));
@@ -478,25 +423,16 @@ mod tests {
     }
 
     #[test]
-    fn cursor_defaults_use_provider_prefixes() {
-        let ids = resolve_model_ids_for_provider(Provider::Cursor);
-
-        assert!(ids.iter().any(|id| id == "cursor/auto"));
-        assert!(ids.iter().any(|id| id == "cursor/gpt-5"));
-        assert!(ids.iter().any(|id| id == "cursor/sonnet-4"));
-    }
-
-    #[test]
     fn highlights_codex_models_by_version_and_filters_light_variants() {
         let ids = resolve_model_ids_for_provider(Provider::Codex);
 
         assert_eq!(
             highlight_model_ids_for_provider(Provider::Codex, &ids),
             vec![
+                "gpt-6-astra".to_owned(),
                 "gpt-5.6-sol".to_owned(),
                 "gpt-5.6-terra".to_owned(),
                 "gpt-5.6-luna".to_owned(),
-                "gpt-5.5".to_owned(),
             ]
         );
     }
@@ -528,44 +464,10 @@ mod tests {
     }
 
     #[test]
-    fn highlights_cursor_live_like_models_by_version_family_and_effort() {
-        let ids = [
-            "cursor/auto",
-            "cursor/gpt-5.2",
-            "cursor/gpt-5.3-codex",
-            "cursor/gpt-5.3-codex-high",
-            "cursor/gpt-5.3-codex-xhigh",
-            "cursor/claude-fable-5",
-            "cursor/claude-fable-5-fast",
-            "cursor/claude-4-opus",
-            "cursor/claude-opus-4-8-thinking-max",
-            "cursor/claude-4.6-sonnet-medium-thinking",
-            "cursor/composer-2.5",
-            "cursor/sonnet-4-thinking",
-        ]
-        .into_iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-
-        assert_eq!(
-            highlight_model_ids_for_provider(Provider::Cursor, &ids),
-            vec![
-                "cursor/claude-fable-5".to_owned(),
-                "cursor/claude-opus-4-8-thinking-max".to_owned(),
-                "cursor/gpt-5.3-codex-xhigh".to_owned(),
-                "cursor/claude-4.6-sonnet-medium-thinking".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
     fn parses_decimal_and_dash_separated_model_versions() {
+        assert_eq!(strongest_version("gpt-5.3-codex-xhigh"), Some((5, 3)));
         assert_eq!(
-            strongest_version("cursor/gpt-5.3-codex-xhigh"),
-            Some((5, 3))
-        );
-        assert_eq!(
-            strongest_version("cursor/claude-opus-4-8-thinking-max"),
+            strongest_version("claude-opus-4-8-thinking-max"),
             Some((4, 8))
         );
     }
@@ -584,29 +486,37 @@ mod tests {
 
     #[test]
     fn provider_detection_handles_prefixed_grok_models() {
-        assert_eq!(provider_for_model("grok-4.6"), Provider::Grok);
-        assert_eq!(provider_for_model("xai/grok-4.6"), Provider::Grok);
-        assert_eq!(provider_for_model("grok/grok-4.6"), Provider::Grok);
-        assert_eq!(provider_for_model("openai-codex/grok-4.3"), Provider::Grok);
+        assert_eq!(provider_for_model("grok-4.6"), Some(Provider::Grok));
+        assert_eq!(provider_for_model("xai/grok-4.6"), Some(Provider::Grok));
+        assert_eq!(provider_for_model("grok/grok-4.6"), Some(Provider::Grok));
+        assert_eq!(
+            provider_for_model("openai-codex/grok-4.3"),
+            Some(Provider::Grok)
+        );
         assert_eq!(
             provider_for_model("openai-codex/gpt-5.6-luna"),
-            Provider::Codex
+            Some(Provider::Codex)
         );
-        assert_eq!(provider_for_model("kiro/auto"), Provider::Kiro);
-        assert_eq!(provider_for_model("cursor/gpt-5"), Provider::Cursor);
-        assert_eq!(provider_for_model("sonnet-4"), Provider::Cursor);
-        assert_eq!(provider_for_model("claude-sonnet-4.5"), Provider::Kiro);
+        assert_eq!(provider_for_model("gpt-6-astra"), Some(Provider::Codex));
+        assert_eq!(provider_for_model("kiro/auto"), Some(Provider::Kiro));
+        assert_eq!(
+            provider_for_model("claude-sonnet-4.5"),
+            Some(Provider::Kiro)
+        );
+    }
+
+    #[test]
+    fn removed_cursor_models_do_not_route_to_another_provider() {
+        assert_eq!(provider_for_model("cursor/gpt-5"), None);
+        assert_eq!(provider_for_model("sonnet-4"), None);
+        assert_eq!(provider_for_model("opus"), None);
     }
 
     #[test]
     fn model_list_owners_match_provider() {
-        let models = resolve_model_list_for_providers(&[
-            Provider::Codex,
-            Provider::Grok,
-            Provider::Kiro,
-            Provider::Cursor,
-        ])
-        .unwrap();
+        let models =
+            resolve_model_list_for_providers(&[Provider::Codex, Provider::Grok, Provider::Kiro])
+                .unwrap();
 
         let owner_for = |id: &str| {
             models
@@ -616,9 +526,8 @@ mod tests {
                 .map(|model| model.owned_by)
         };
 
-        assert_eq!(owner_for("gpt-5.6-sol"), Some("openai-codex"));
+        assert_eq!(owner_for("gpt-6-astra"), Some("openai-codex"));
         assert_eq!(owner_for("grok-4.6"), Some("xai"));
         assert_eq!(owner_for("auto"), Some("kiro"));
-        assert_eq!(owner_for("cursor/gpt-5"), Some("cursor"));
     }
 }

@@ -11,13 +11,9 @@ fn resolve_login_provider(
     store: &AuthStore,
     provider: Option<String>,
     kiro: bool,
-    cursor: bool,
 ) -> Result<Provider> {
     if kiro {
         return Ok(Provider::Kiro);
-    }
-    if cursor {
-        return Ok(Provider::Cursor);
     }
     provider.map_or_else(|| prompt_login_provider(store), |value| value.parse())
 }
@@ -40,19 +36,13 @@ fn prompt_login_provider(store: &AuthStore) -> Result<Provider> {
     parse_login_provider_choice(input.trim())
 }
 
-const LOGIN_PROVIDERS: [Provider; 4] = [
-    Provider::Codex,
-    Provider::Grok,
-    Provider::Kiro,
-    Provider::Cursor,
-];
+const LOGIN_PROVIDERS: [Provider; 3] = [Provider::Codex, Provider::Grok, Provider::Kiro];
 
 fn parse_login_provider_choice(value: &str) -> Result<Provider> {
     match value {
         "" | "1" => Ok(Provider::Codex),
         "2" => Ok(Provider::Grok),
         "3" => Ok(Provider::Kiro),
-        "4" => Ok(Provider::Cursor),
         other => other.parse(),
     }
 }
@@ -73,7 +63,6 @@ const fn login_provider_label(provider: Provider) -> &'static str {
         Provider::Codex => "openai",
         Provider::Grok => "grok",
         Provider::Kiro => "kiro",
-        Provider::Cursor => "cursor",
     }
 }
 
@@ -131,9 +120,6 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
     if provider == Provider::Kiro {
         return login_kiro(store, http, show_daemon_restart_hint).await;
     }
-    if provider == Provider::Cursor {
-        return login_cursor(store, http, show_daemon_restart_hint).await;
-    }
     let flow = match provider {
         Provider::Codex => create_authorization_flow(originator)?,
         Provider::Grok => {
@@ -142,7 +128,6 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
                 .await?
         }
         Provider::Kiro => unreachable!("Kiro login is handled before generic OAuth flow"),
-        Provider::Cursor => unreachable!("Cursor login is handled before generic OAuth flow"),
     };
     println!(
         "Open this URL to authenticate with {}:\n{}\n",
@@ -166,7 +151,6 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
                 .await?
         }
         Provider::Kiro => unreachable!("Kiro login is handled before generic OAuth flow"),
-        Provider::Cursor => unreachable!("Cursor login is handled before generic OAuth flow"),
     };
     store.save(&credentials)?;
     let subject = credential_subject(&credentials);
@@ -178,71 +162,6 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
         println!("{}", new_provider_daemon_restart_hint(provider));
     }
     Ok(())
-}
-
-async fn login_cursor(
-    store: AuthStore,
-    http: Client,
-    show_daemon_restart_hint: bool,
-) -> Result<()> {
-    let client = CursorOAuthClient::new(http);
-    let flow = client.create_authorization_flow()?;
-    if open_browser_url(flow.authorize_url.as_str()) {
-        println!("Signing in with the browser...");
-        println!(
-            "If your browser didn't open, open this URL to authenticate with Cursor:\n{}\n",
-            flow.authorize_url
-        );
-    } else {
-        println!(
-            "Open this URL to authenticate with Cursor:\n{}\n",
-            flow.authorize_url
-        );
-    }
-    println!("After login, leave this command running; rotom will poll Cursor for the result.");
-
-    let credentials = client.wait_for_browser_login(&flow).await?;
-    store.save(&credentials)?;
-    let subject = credential_subject(&credentials);
-    println!(
-        "logged in {subject} and saved credentials to {}",
-        store.path().display()
-    );
-    if show_daemon_restart_hint {
-        println!("{}", new_provider_daemon_restart_hint(Provider::Cursor));
-    }
-    Ok(())
-}
-
-fn open_browser_url(url: &str) -> bool {
-    if std::env::var_os("NO_OPEN_BROWSER").is_some() {
-        return false;
-    }
-
-    open_browser_command(url)
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(target_os = "macos")]
-fn open_browser_command(url: &str) -> ProcessCommand {
-    let mut command = ProcessCommand::new("open");
-    command.arg(url);
-    command
-}
-
-#[cfg(target_os = "windows")]
-fn open_browser_command(url: &str) -> ProcessCommand {
-    let mut command = ProcessCommand::new("cmd");
-    command.args(["/C", "start", "", url]);
-    command
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn open_browser_command(url: &str) -> ProcessCommand {
-    let mut command = ProcessCommand::new("xdg-open");
-    command.arg(url);
-    command
 }
 
 async fn login_kiro(store: AuthStore, http: Client, show_daemon_restart_hint: bool) -> Result<()> {
@@ -353,11 +272,6 @@ async fn refresh_credentials(credentials: &Credentials) -> Result<Credentials> {
         }
         Provider::Kiro => {
             KiroOAuthClient::default()
-                .refresh_token(&credentials.refresh_token)
-                .await
-        }
-        Provider::Cursor => {
-            CursorOAuthClient::default()
                 .refresh_token(&credentials.refresh_token)
                 .await
         }

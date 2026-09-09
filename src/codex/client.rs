@@ -2,7 +2,6 @@ use crate::{
     Error, Result,
     codex::{
         convert::to_codex_request,
-        cursor,
         events::{
             collect_output, collect_response_value, event_error, event_tool_call, finish_reason,
             is_done_event, normalize_incomplete_result_finish_reason,
@@ -177,10 +176,6 @@ impl CodexClient {
         if self.provider == Provider::Kiro {
             return self.complete_kiro_chat(request, credentials).await;
         }
-        if self.provider == Provider::Cursor {
-            return cursor::complete_chat(request, credentials).await;
-        }
-
         let id = chat_completion_id();
         let created = now_unix();
         let model = request.model.clone();
@@ -223,10 +218,6 @@ impl CodexClient {
         if self.provider == Provider::Kiro {
             return self.stream_kiro_chat(request, credentials).await;
         }
-        if self.provider == Provider::Cursor {
-            return Ok(cursor::stream_chat(request, credentials.clone()));
-        }
-
         let id = chat_completion_id();
         let created = now_unix();
         let model = request.model.clone();
@@ -311,10 +302,6 @@ impl CodexClient {
             let response = self.send_kiro_body(&request, credentials).await?;
             return kiro::collect_response_value(response, request).await;
         }
-        if self.provider == Provider::Cursor {
-            return cursor::complete_response(&request, credentials).await;
-        }
-
         let response = self.send_body(&request, credentials).await?;
         if response_is_json(&response) {
             let mut value = response.json::<Value>().await?;
@@ -339,10 +326,6 @@ impl CodexClient {
             let response = self.send_kiro_body(&request, credentials).await?;
             return Ok(kiro::response_event_stream(response, request));
         }
-        if self.provider == Provider::Cursor {
-            return Ok(cursor::response_event_stream(request, credentials.clone()));
-        }
-
         let response = self.send_body(&request, credentials).await?;
         Ok(Box::pin(sse::json_named_events(Box::pin(
             response.bytes_stream(),

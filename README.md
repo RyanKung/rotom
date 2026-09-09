@@ -7,8 +7,8 @@
 [![CI](https://github.com/RyanKung/rotom/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/ci.yml)
 [![Release](https://github.com/RyanKung/rotom/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/release.yml)
 
-Use your Codex, Grok, Kiro, or Cursor OAuth login from any tool that speaks the
-OpenAI or Anthropic API.
+Use your Codex, Grok, or Kiro OAuth login from any tool that speaks the OpenAI
+or Anthropic API.
 
 rotom is a small local gateway. You log in once, run `rotom serve`, and point
 Claude Code, the OpenAI/Anthropic SDKs, or any compatible client at the local
@@ -38,7 +38,7 @@ Point Claude Code (or any Anthropic-compatible client) at the gateway:
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:14550
 export ANTHROPIC_AUTH_TOKEN=local-secret
-export ANTHROPIC_MODEL="gpt-5.6-sol"
+export ANTHROPIC_MODEL="gpt-6-astra"
 
 claude
 ```
@@ -51,7 +51,7 @@ claude -p "Reply with the single word OK"
 
 > Point `ANTHROPIC_BASE_URL` at the server root, **not** `/v1` — clients append
 > `/v1/messages` themselves. `ANTHROPIC_AUTH_TOKEN` is your local `--api-key`,
-> not an upstream token. Use a model that `/v1/models` lists (e.g. `gpt-5.6-sol`).
+> not an upstream token. Use a model that `/v1/models` lists (e.g. `gpt-6-astra`).
 
 ## Logging In
 
@@ -63,12 +63,10 @@ a flag:
 | OpenAI/Codex | `rotom login --provider openai`|
 | Grok (xAI)   | `rotom login --provider grok`  |
 | Kiro         | `rotom login --kiro`           |
-| Cursor       | `rotom login --cursor`         |
 
 - **Codex / Grok**: browser login, then paste the redirected
   `http://localhost:.../auth/callback?...` URL back into the terminal.
 - **Kiro**: browser login via Kiro's portal callback (Google/GitHub).
-- **Cursor**: browser approval that rotom polls for — no localhost callback.
 
 Credentials are stored per provider in `~/.rotom/auth.json` (override with
 `ROTOM_AUTH_FILE` or `ROTOM_HOME`). Logging in to one provider never replaces
@@ -86,10 +84,8 @@ rotom models                      # everything rotom exposes
 rotom models --provider grok      # one provider
 ```
 
-Common ids include `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-`grok-4.6`, Kiro's `claude-*` family, and `cursor/auto`. rotom fetches the
-live registry where the provider supports it and falls back to built-in aliases
-otherwise.
+Common ids include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
+`grok-4.6`, and Kiro's `claude-*` family.
 
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-5.5`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
@@ -102,7 +98,7 @@ OpenAI-compatible:
 curl http://127.0.0.1:14550/v1/chat/completions \
   -H 'content-type: application/json' \
   -H 'authorization: Bearer local-secret' \
-  -d '{"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "hello"}]}'
+  -d '{"model": "gpt-6-astra", "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
 Anthropic-compatible:
@@ -112,7 +108,7 @@ curl http://127.0.0.1:14550/v1/messages \
   -H 'content-type: application/json' \
   -H 'x-api-key: local-secret' \
   -H 'anthropic-version: 2023-06-01' \
-  -d '{"model": "gpt-5.6-sol", "max_tokens": 1024, "messages": [{"role": "user", "content": "hello"}]}'
+  -d '{"model": "gpt-6-astra", "max_tokens": 1024, "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
 Grok-native text to speech:
@@ -236,17 +232,10 @@ quietly drops controls the upstream cannot honor.
 - **Kiro**: mapped to Kiro's `GenerateAssistantResponse` schema (text, tools,
   tool results, history, inline base64 images/documents). Remote image/document
   URLs are rejected, not fetched.
-- **Cursor**: an agent runtime, so client tools are **bridged** rather than
-  executed by rotom — they are exposed to Cursor as a `rotom-tools` MCP server,
-  Cursor's tool calls come back as standard `tool_call`/`tool_use` items for your
-  client to run, and the results feed back into the same stream. Cursor's own
-  built-in tools are declined. Requests default to agent mode; override with
-  `ROTOM_CURSOR_AGENT_MODE`. Multimodal and sampling controls are not forwarded.
-
 ## Disclaimer
 
 rotom is an unofficial compatibility tool. It is not affiliated with, endorsed
-by, or supported by OpenAI, Anthropic, xAI, Kiro, or Cursor.
+by, or supported by OpenAI, Anthropic, xAI, or Kiro.
 
 You are responsible for complying with the terms and account restrictions of
 your upstream provider. In particular, do not assume personal OAuth access can

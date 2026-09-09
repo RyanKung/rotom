@@ -198,9 +198,9 @@ fn prefers_explicit_model_fallback_over_default() {
 fn served_provider_prefers_cli_provider() {
     let auth = TestAuthStore::new();
     save_provider_credentials(&auth.store, Provider::Codex);
-    save_provider_credentials(&auth.store, Provider::Cursor);
+    save_provider_credentials(&auth.store, Provider::Kiro);
     let config = AppConfig {
-        provider: Some(Provider::Cursor),
+        provider: Some(Provider::Kiro),
         ..AppConfig::default()
     };
 
@@ -214,7 +214,7 @@ fn served_provider_prefers_cli_provider() {
 fn served_provider_prefers_config_provider_over_saved_providers() {
     let auth = TestAuthStore::new();
     save_provider_credentials(&auth.store, Provider::Codex);
-    save_provider_credentials(&auth.store, Provider::Cursor);
+    save_provider_credentials(&auth.store, Provider::Kiro);
     let config = AppConfig {
         provider: Some(Provider::Codex),
         ..AppConfig::default()
@@ -228,12 +228,12 @@ fn served_provider_prefers_config_provider_over_saved_providers() {
 #[test]
 fn served_provider_uses_saved_providers_without_selection() {
     let auth = TestAuthStore::new();
-    save_provider_credentials(&auth.store, Provider::Cursor);
+    save_provider_credentials(&auth.store, Provider::Kiro);
     save_provider_credentials(&auth.store, Provider::Codex);
 
     let providers = resolve_served_providers(&auth.store, None, None).unwrap();
 
-    assert_eq!(providers, [Provider::Codex, Provider::Cursor]);
+    assert_eq!(providers, [Provider::Codex, Provider::Kiro]);
 }
 
 fn save_provider_credentials(store: &AuthStore, provider: Provider) {
@@ -253,6 +253,7 @@ fn formats_models_grouped_by_provider() {
     let output = format_models(&[Provider::Codex, Provider::Grok]);
 
     assert!(output.contains("OpenAI (codex)\n  gpt-5.1"));
+    assert!(output.contains("  gpt-6-astra\n"));
     assert!(output.contains("  gpt-5.6-sol\n"));
     assert!(output.contains("Grok (grok)\n  grok-4.6"));
     assert!(!output.contains("Kiro (kiro)"));
@@ -278,15 +279,6 @@ fn formats_kiro_models() {
 }
 
 #[test]
-fn formats_cursor_models() {
-    let output = format_models(&[Provider::Cursor]);
-
-    assert!(output.starts_with("Cursor (cursor)\n  cursor/auto\n"));
-    assert!(output.contains("  cursor/gpt-5\n"));
-    assert!(output.contains("  cursor/sonnet-4\n"));
-}
-
-#[test]
 fn formats_status_version_line() {
     assert_eq!(
         rotom_version_line(),
@@ -300,17 +292,14 @@ fn parses_login_provider_choices() {
     assert_eq!(parse_login_provider_choice("1").unwrap(), Provider::Codex);
     assert_eq!(parse_login_provider_choice("2").unwrap(), Provider::Grok);
     assert_eq!(parse_login_provider_choice("3").unwrap(), Provider::Kiro);
-    assert_eq!(parse_login_provider_choice("4").unwrap(), Provider::Cursor);
     assert_eq!(
         parse_login_provider_choice("openai").unwrap(),
         Provider::Codex
     );
     assert_eq!(parse_login_provider_choice("grok").unwrap(), Provider::Grok);
     assert_eq!(parse_login_provider_choice("kiro").unwrap(), Provider::Kiro);
-    assert_eq!(
-        parse_login_provider_choice("cursor").unwrap(),
-        Provider::Cursor
-    );
+    assert!(parse_login_provider_choice("4").is_err());
+    assert!(parse_login_provider_choice("cursor").is_err());
 }
 
 #[test]
@@ -330,23 +319,8 @@ fn rejects_kiro_login_flag_with_provider() {
 }
 
 #[test]
-fn parses_cursor_login_flag() {
-    let cli = Cli::try_parse_from(["rotom", "login", "--cursor"]).unwrap();
-
-    let Command::Login {
-        cursor, provider, ..
-    } = cli.command
-    else {
-        panic!("expected login command");
-    };
-    assert!(cursor);
-    assert!(provider.is_none());
-}
-
-#[test]
-fn rejects_cursor_login_flag_with_kiro_or_provider() {
-    assert!(Cli::try_parse_from(["rotom", "login", "--cursor", "--kiro"]).is_err());
-    assert!(Cli::try_parse_from(["rotom", "login", "--cursor", "--provider", "grok"]).is_err());
+fn removed_cursor_login_flag_is_rejected() {
+    assert!(Cli::try_parse_from(["rotom", "login", "--cursor"]).is_err());
 }
 
 #[test]
@@ -362,12 +336,10 @@ fn formats_login_provider_choice_with_status() {
     let openai = format_login_provider_choice(Provider::Codex, &credentials);
     let grok = format_login_provider_choice(Provider::Grok, &credentials);
     let kiro = format_login_provider_choice(Provider::Kiro, &credentials);
-    let cursor = format_login_provider_choice(Provider::Cursor, &credentials);
 
     assert!(openai.starts_with("openai (logged in, expires in "));
     assert_eq!(grok, "grok");
     assert_eq!(kiro, "kiro");
-    assert_eq!(cursor, "cursor");
 }
 
 #[test]
