@@ -2,8 +2,6 @@
 pub mod client;
 /// Converts OpenAI-style chat payloads into Codex request bodies.
 pub mod convert;
-/// Cursor `AgentService` request/response adapter.
-pub mod cursor;
 /// Aggregates streamed Codex events into chat output state.
 pub mod events;
 mod kiro;

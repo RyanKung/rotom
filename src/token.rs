@@ -1,7 +1,7 @@
 use crate::{
     Error, Result,
     config::{AuthStore, Credentials, Provider},
-    oauth::{CodexOAuthClient, CursorOAuthClient, GrokOAuthClient, KiroOAuthClient},
+    oauth::{CodexOAuthClient, GrokOAuthClient, KiroOAuthClient},
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -34,7 +34,6 @@ impl TokenManager {
             Provider::Codex => OAuthClient::Codex(CodexOAuthClient::new(http)),
             Provider::Grok => OAuthClient::Grok(GrokOAuthClient::new(http)),
             Provider::Kiro => OAuthClient::Kiro(KiroOAuthClient::new(http)),
-            Provider::Cursor => OAuthClient::Cursor(CursorOAuthClient::new(http)),
         };
         Self::new_with_oauth(store, oauth)
     }
@@ -130,8 +129,6 @@ pub enum OAuthClient {
     Grok(GrokOAuthClient),
     /// Kiro imported credential refresh client.
     Kiro(KiroOAuthClient),
-    /// Cursor credential refresh client.
-    Cursor(CursorOAuthClient),
 }
 
 impl OAuthClient {
@@ -140,7 +137,6 @@ impl OAuthClient {
             Self::Codex(_) => Provider::Codex,
             Self::Grok(_) => Provider::Grok,
             Self::Kiro(_) => Provider::Kiro,
-            Self::Cursor(_) => Provider::Cursor,
         }
     }
 
@@ -149,7 +145,6 @@ impl OAuthClient {
             Self::Codex(client) => client.refresh_token(refresh_token).await,
             Self::Grok(client) => client.refresh_token(refresh_token).await,
             Self::Kiro(client) => client.refresh_token(refresh_token).await,
-            Self::Cursor(client) => client.refresh_token(refresh_token).await,
         }
     }
 }
@@ -186,43 +181,10 @@ mod tests {
         }))
     }
 
-    async fn cursor_refresh_handler(Json(body): Json<Value>) -> Json<Value> {
-        assert_eq!(
-            body.get("grant_type").and_then(Value::as_str),
-            Some("refresh_token")
-        );
-        assert_eq!(
-            body.get("refresh_token").and_then(Value::as_str),
-            Some("old_refresh")
-        );
-        Json(json!({
-            "access_token": jwt_with_payload(&json!({
-                "exp": 1_893_456_002_i64,
-                "sub": "cursor_refreshed"
-            })),
-            "id_token": jwt_with_payload(&json!({
-                "exp": 1_893_456_002_i64,
-                "sub": "cursor_refreshed"
-            })),
-            "shouldLogout": false
-        }))
-    }
-
     async fn spawn_refresh_server() -> String {
         let app = Router::new().route("/token", post(refresh_handler));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/token", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-
-        url
-    }
-
-    async fn spawn_cursor_refresh_server() -> String {
-        let app = Router::new().route("/oauth/token", post(cursor_refresh_handler));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -278,41 +240,6 @@ mod tests {
         assert_eq!(credentials.refresh_token, "new_refresh");
         assert_eq!(credentials.account_id, "acc_refreshed");
         assert_eq!(store.load().unwrap(), Some(credentials));
-    }
-
-    #[tokio::test]
-    async fn manager_auto_refreshes_expired_cursor_credentials_and_saves_them() {
-        let dir = TempDir::new().unwrap();
-        let store = AuthStore::new(dir.path().join("auth.json"));
-        store
-            .save(&Credentials {
-                provider: crate::config::Provider::Cursor,
-                access_token: "old_access".into(),
-                refresh_token: "old_refresh".into(),
-                expires_at: now_unix() - 1,
-                account_id: "cursor_old".into(),
-            })
-            .unwrap();
-        let oauth = OAuthClient::Cursor(CursorOAuthClient::new_with_endpoints(
-            Client::new(),
-            "https://cursor.com",
-            spawn_cursor_refresh_server().await,
-            1,
-        ));
-        let manager = TokenManager::new_with_oauth(store.clone(), oauth);
-
-        let credentials = manager.credentials().await.unwrap();
-
-        assert_eq!(credentials.provider, crate::config::Provider::Cursor);
-        assert_eq!(credentials.refresh_token, "old_refresh");
-        assert_eq!(credentials.account_id, "cursor_refreshed");
-        assert_eq!(credentials.expires_at, 1_893_456_002);
-        assert_eq!(
-            store
-                .load_provider(crate::config::Provider::Cursor)
-                .unwrap(),
-            Some(credentials)
-        );
     }
 
     #[tokio::test]

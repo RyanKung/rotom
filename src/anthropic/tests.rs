@@ -35,7 +35,7 @@ fn converts_anthropic_request_to_openai_shape() {
 #[test]
 fn accepts_system_role_messages_from_tolerant_clients() {
     let request: MessagesRequest = serde_json::from_value(json!({
-        "model": "cursor/claude-opus-4-8-medium",
+        "model": "claude-opus-4.8",
         "messages": [
             {
                 "role": "system",

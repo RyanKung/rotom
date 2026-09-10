@@ -13,7 +13,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use reqwest::Client;
 use rotom::{
     Error, Result,
-    codex::{client::CodexClient, cursor},
+    codex::client::CodexClient,
     config::{AppConfig, AppConfigStore, AuthStore, Credentials, Provider, now_unix},
     daemon::{self, DaemonInstallOptions},
     logging::{self, LogLevel},
@@ -22,9 +22,9 @@ use rotom::{
         resolve_model_list_for_providers,
     },
     oauth::{
-        CodexOAuthClient, CursorOAuthClient, GrokOAuthClient, KiroAuthorizationCallback,
-        KiroOAuthClient, create_authorization_flow, default_cli_database_path,
-        default_desktop_token_path, parse_kiro_authorization_callback,
+        CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
+        create_authorization_flow, default_cli_database_path, default_desktop_token_path,
+        parse_kiro_authorization_callback,
     },
     server::{AppState, UpstreamState, serve_all},
     timefmt::format_duration,
@@ -50,7 +50,7 @@ const LOG_TOKEN_STATUS_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MODEL_FALLBACK: &str = "gpt-5.5";
 const CLI_LONG_ABOUT: &str = "\
 rotom is a local OpenAI- and Anthropic-compatible API gateway backed by Codex,
-Grok, Kiro, or Cursor OAuth.
+Grok, or Kiro OAuth.
 
 It helps clients that speak either the OpenAI Chat Completions API or the
 Anthropic Messages API call the selected upstream after you complete the OAuth
@@ -61,7 +61,6 @@ Examples:
   rotom login
   rotom login --provider grok
   rotom login --kiro
-  rotom login --cursor
   rotom config
   rotom config show
   rotom serve
@@ -73,18 +72,16 @@ Examples:
   rotom daemon status
   rotom models
   rotom models --provider grok
-  rotom models --provider cursor
   rotom kiro import --from cli
   rotom refresh
   rotom status
-  rotom status --provider cursor
   rotom update
   curl -X POST http://127.0.0.1:14550/v1/auth/refresh \\
     -H 'authorization: Bearer local-secret'
 
 Environment:
   ROTOM_API_KEY          Optional local API key for server endpoints
-  ROTOM_PROVIDER         Upstream provider: codex, grok, kiro, or cursor
+  ROTOM_PROVIDER         Upstream provider: codex, grok, or kiro
   ROTOM_MODEL_FALLBACK   Fallback for unsupported Anthropic model ids
   ROTOM_AUTH_FILE        Override the credential file path
   ROTOM_HOME             Override the default config home
@@ -94,7 +91,7 @@ Files:
 
 Disclaimer:
   rotom is an unofficial tool and is not affiliated with, endorsed by, or
-  supported by OpenAI, Anthropic, xAI, AWS, Kiro, or Cursor. Use it at your own
+  supported by OpenAI, Anthropic, xAI, AWS, or Kiro. Use it at your own
   risk, make sure your usage complies with the terms that apply to your account
   and the upstream services, and do not assume the LGPLv3 license overrides
   upstream account restrictions on sharing or reselling personal OAuth-backed
@@ -140,7 +137,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "OAuth provider to authenticate: codex, grok, kiro, or cursor"
+            help = "OAuth provider to authenticate: codex, grok, or kiro"
         )]
         provider: Option<String>,
         #[arg(
@@ -150,13 +147,6 @@ enum Command {
             help = "Authenticate with Kiro without scanning local Kiro credential stores"
         )]
         kiro: bool,
-        #[arg(
-            long,
-            action = ArgAction::SetTrue,
-            conflicts_with_all = ["provider", "kiro"],
-            help = "Authenticate with Cursor's browser polling flow"
-        )]
-        cursor: bool,
         #[arg(
             long,
             default_value = "pi",
@@ -197,7 +187,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "Upstream provider to serve: codex, grok, kiro, or cursor"
+            help = "Upstream provider to serve: codex, grok, or kiro"
         )]
         provider: Option<String>,
         #[arg(
@@ -219,7 +209,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "OAuth provider to refresh: codex, grok, kiro, or cursor. When omitted, refreshes all saved providers."
+            help = "OAuth provider to refresh: codex, grok, or kiro. When omitted, refreshes all saved providers."
         )]
         provider: Option<String>,
     },
@@ -233,21 +223,19 @@ enum Command {
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to inspect: codex/openai, grok/xai, kiro, or cursor"
+            help = "Provider to inspect: codex/openai, grok/xai, or kiro"
         )]
         provider: Option<String>,
     },
     #[command(
         about = "List all available models grouped by provider",
-        long_about = "Print all model identifiers rotom exposes through /v1/models, grouped by upstream provider. Use --provider to list only one provider. When Cursor credentials are available, rotom fetches Cursor's live model registry."
+        long_about = "Print all model identifiers rotom exposes through /v1/models, grouped by upstream provider. Use --provider to list only one provider."
     )]
     Models {
-        #[arg(long, value_name = "PATH", help = "Credential file to read")]
-        auth_file: Option<PathBuf>,
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to list: codex/openai, grok/xai, kiro, or cursor"
+            help = "Provider to list: codex/openai, grok/xai, or kiro"
         )]
         provider: Option<String>,
     },
@@ -389,7 +377,7 @@ struct DaemonInstallCliOptions {
         long,
         env = "ROTOM_PROVIDER",
         value_name = "PROVIDER",
-        help = "Upstream provider to serve: codex, grok, kiro, or cursor"
+        help = "Upstream provider to serve: codex, grok, or kiro"
     )]
     provider: Option<String>,
     #[arg(
@@ -416,11 +404,10 @@ async fn run(cli: Cli) -> Result<()> {
             auth_file,
             provider,
             kiro,
-            cursor,
             originator,
         } => {
             let store = auth_store(auth_file)?;
-            let provider = resolve_login_provider(&store, provider, kiro, cursor)?;
+            let provider = resolve_login_provider(&store, provider, kiro)?;
             login(store, provider, &originator).await
         }
         Command::Config { command } => config_command(command.as_ref()),
@@ -480,81 +467,10 @@ async fn run(cli: Cli) -> Result<()> {
             auth_file,
             provider,
         } => status(auth_store(auth_file)?, provider).await,
-        Command::Models {
-            auth_file,
-            provider,
-        } => models(auth_store(auth_file)?, provider).await,
+        Command::Models { provider } => models(provider),
         Command::Kiro { command } => kiro_command(command),
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),
-    }
-}
-
-async fn models(store: AuthStore, provider: Option<String>) -> Result<()> {
-    let providers = match provider {
-        Some(provider) => vec![provider.parse()?],
-        None => vec![
-            Provider::Codex,
-            Provider::Grok,
-            Provider::Kiro,
-            Provider::Cursor,
-        ],
-    };
-    let groups = model_groups_for_providers(&store, &providers).await?;
-    print!("{}", format_model_groups(&groups));
-    Ok(())
-}
-
-#[cfg(test)]
-fn format_models(providers: &[Provider]) -> String {
-    let groups = providers
-        .iter()
-        .copied()
-        .map(|provider| (provider, provider_model_ids(provider)))
-        .collect::<Vec<_>>();
-    format_model_groups(&groups)
-}
-
-fn format_model_groups(groups: &[(Provider, Vec<String>)]) -> String {
-    groups
-        .iter()
-        .map(|(provider, models)| {
-            let models = model_lines(models.clone()).join("\n");
-            format!(
-                "{} ({provider})\n{models}\n",
-                model_provider_label(*provider)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-async fn model_groups_for_providers(
-    store: &AuthStore,
-    providers: &[Provider],
-) -> Result<Vec<(Provider, Vec<String>)>> {
-    let credentials = store.load_all()?;
-    let mut groups = Vec::new();
-    for provider in providers {
-        let models = if let Some(credentials) = credentials
-            .iter()
-            .find(|credentials| credentials.provider == *provider)
-        {
-            provider_model_ids_for_credentials(*provider, credentials).await
-        } else {
-            provider_model_ids(*provider)
-        };
-        groups.push((*provider, models));
-    }
-    Ok(groups)
-}
-
-const fn model_provider_label(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Codex => "OpenAI",
-        Provider::Grok => "Grok",
-        Provider::Kiro => "Kiro",
-        Provider::Cursor => "Cursor",
     }
 }
 
@@ -595,6 +511,8 @@ fn build_update_command(version: Option<&str>) -> ProcessCommand {
 include!("main_config.rs");
 
 include!("main_auth.rs");
+
+include!("main_models.rs");
 
 /// Fetches token status and renders a human-readable report.
 async fn status(store: AuthStore, provider: Option<String>) -> Result<()> {
@@ -646,7 +564,7 @@ async fn render_provider_status(store: &AuthStore, provider: Provider, http: Cli
                 }
                 return;
             };
-            let models = provider_model_ids_for_credentials(provider, &credentials).await;
+            let models = provider_model_ids(provider);
             let highlights = highlight_model_ids_for_provider(provider, &models);
             println!("provider: {}", credentials.provider);
             println!(
@@ -661,7 +579,7 @@ async fn render_provider_status(store: &AuthStore, provider: Provider, http: Cli
             return;
         }
     };
-    let models = provider_model_ids_for_credentials(provider, &credentials).await;
+    let models = provider_model_ids(provider);
     let highlights = highlight_model_ids_for_provider(provider, &models);
     println!("provider: {}", credentials.provider);
     println!("token: {}", token_expiry_message(&credentials));
@@ -670,43 +588,6 @@ async fn render_provider_status(store: &AuthStore, provider: Provider, http: Cli
     for line in model_lines(highlights) {
         println!("{line}");
     }
-}
-
-async fn provider_model_ids_for_credentials(
-    provider: Provider,
-    credentials: &Credentials,
-) -> Vec<String> {
-    match live_provider_model_ids(provider, credentials).await {
-        Ok(models) => models,
-        Err(error) => {
-            eprintln!(
-                "warning: failed to fetch live {} model list; showing built-in fallback: {error}",
-                provider.display_name()
-            );
-            provider_model_ids(provider)
-        }
-    }
-}
-
-async fn live_provider_model_ids(
-    provider: Provider,
-    credentials: &Credentials,
-) -> Result<Vec<String>> {
-    match provider {
-        Provider::Cursor => cursor::list_model_ids(credentials).await,
-        Provider::Codex | Provider::Grok | Provider::Kiro => Ok(provider_model_ids(provider)),
-    }
-}
-
-fn provider_model_ids(provider: Provider) -> Vec<String> {
-    resolve_model_ids_for_provider(provider)
-}
-
-fn model_lines(models: Vec<String>) -> Vec<String> {
-    models
-        .into_iter()
-        .map(|model| format!("  {model}"))
-        .collect()
 }
 
 fn resolve_status_providers(

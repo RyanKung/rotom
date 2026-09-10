@@ -300,7 +300,7 @@ pub fn responses_to_upstream_request(
     if let Some(tools) = request.tools.as_ref().filter(|tools| !tools.is_empty()) {
         body["tools"] = Value::Array(tools.iter().map(convert_tool).collect::<Result<Vec<_>>>()?);
     }
-    if let Some(reasoning) = request.reasoning.clone() {
+    if let Some(reasoning) = reasoning_for(provider, &request.model, request.reasoning.as_ref()) {
         body["reasoning"] = reasoning;
     }
     if provider == Provider::Grok {
@@ -321,7 +321,7 @@ fn upstream_stream_value(provider: Provider, request: &ResponsesRequest) -> bool
         // Codex currently expects SSE upstream even when the downstream API
         // requested a one-shot JSON response.
         Provider::Codex => true,
-        Provider::Grok | Provider::Kiro | Provider::Cursor => request.wants_stream(),
+        Provider::Grok | Provider::Kiro => request.wants_stream(),
     }
 }
 
@@ -329,7 +329,7 @@ fn upstream_store_value(provider: Provider, request: &ResponsesRequest, input: &
     match provider {
         Provider::Codex => request.should_store() && !input_requires_stateless_replay(input),
         Provider::Grok => request.should_store(),
-        Provider::Kiro | Provider::Cursor => false,
+        Provider::Kiro => false,
     }
 }
 
@@ -342,7 +342,6 @@ const fn should_include_instructions(
         Provider::Codex => true,
         Provider::Grok => !instructions.is_empty() && request.previous_response_id.is_none(),
         Provider::Kiro => !instructions.is_empty(),
-        Provider::Cursor => false,
     }
 }
 
@@ -387,7 +386,8 @@ fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
         || id.starts_with("gpt-5.3")
         || id.starts_with("gpt-5.4")
         || id.starts_with("gpt-5.5")
-        || id.starts_with("gpt-5.6"))
+        || id.starts_with("gpt-5.6")
+        || id.starts_with("gpt-6"))
         && effort == "minimal"
     {
         "low".to_owned()
@@ -396,6 +396,25 @@ fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
     } else {
         effort.to_owned()
     }
+}
+
+fn reasoning_for(provider: Provider, model: &str, value: Option<&Value>) -> Option<Value> {
+    let mut reasoning = value?.clone();
+    if provider == Provider::Codex {
+        if let Some(reasoning) = reasoning.as_object_mut() {
+            let effort = reasoning
+                .get("effort")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if let Some(effort) = effort {
+                reasoning.insert(
+                    "effort".to_owned(),
+                    Value::String(clamp_reasoning_effort(model, &effort)),
+                );
+            }
+        }
+    }
+    Some(reasoning)
 }
 
 fn insert_optional(body: &mut Value, key: &str, value: Option<Value>) {
@@ -487,7 +506,7 @@ mod tests {
     #[test]
     fn does_not_forward_unsupported_sampling_controls() {
         let body = to_codex_request(&request(json!({
-            "model": "gpt-5.6-terra",
+            "model": "gpt-6-astra",
             "messages": [{"role": "user", "content": "hello"}],
             "temperature": 0.2,
             "top_p": 0.7,
@@ -522,13 +541,33 @@ mod tests {
     }
 
     #[test]
-    fn clamps_minimal_reasoning_for_new_codex_models() {
-        let body = to_codex_request(&request(json!({
-            "model": "gpt-5.5",
-            "messages": [],
-            "reasoning_effort": "minimal"
-        })))
+    fn clamps_minimal_reasoning_for_models_without_minimal_effort() {
+        for model in ["gpt-5.5", "gpt-6-astra"] {
+            let body = to_codex_request(&request(json!({
+                "model": model,
+                "messages": [],
+                "reasoning_effort": "minimal"
+            })))
+            .unwrap();
+
+            assert_eq!(body["reasoning"]["effort"], "low");
+        }
+    }
+
+    #[test]
+    fn clamps_gpt_6_responses_minimal_reasoning_to_low() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "gpt-6-astra",
+            "input": "hello",
+            "reasoning": {"effort": "minimal"}
+        }))
         .unwrap();
+        let input = vec![json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        })];
+
+        let body = responses_to_codex_request(&request, &input).unwrap();
 
         assert_eq!(body["reasoning"]["effort"], "low");
     }
@@ -813,24 +852,6 @@ mod tests {
         let body = responses_to_upstream_request(Provider::Grok, &request, &input).unwrap();
 
         assert_eq!(body["instructions"], "be terse");
-    }
-
-    #[test]
-    fn cursor_responses_requests_do_not_forward_instructions() {
-        let request: ResponsesRequest = serde_json::from_value(json!({
-            "model": "cursor/auto",
-            "instructions": "be terse",
-            "input": "hello"
-        }))
-        .unwrap();
-        let input = vec![json!({
-            "role": "user",
-            "content": [{"type": "input_text", "text": "hello"}]
-        })];
-
-        let body = responses_to_upstream_request(Provider::Cursor, &request, &input).unwrap();
-
-        assert!(body.get("instructions").is_none());
     }
 
     #[test]
