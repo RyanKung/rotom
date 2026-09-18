@@ -12,6 +12,7 @@ use crate::{
         upstream::{UpstreamProvider, adapter_for_provider},
     },
     config::{Credentials, Provider, now_unix},
+    evaluation::EvaluationRequest,
     openai::response::{
         AssistantMessage, ChatChoice, ChatCompletionChunk, ChatCompletionResponse, ModelList,
         chunk_finished, chunk_with_content, chunk_with_role, chunk_with_tool_call,
@@ -44,8 +45,8 @@ pub use crate::codex::upstream::{
     ResponseResourceCapability, codex_headers, grok_headers, grok_tts_headers,
     grok_tts_voices_headers, grok_tts_websocket_headers, resolve_codex_url,
     resolve_grok_responses_url, resolve_grok_tts_url, resolve_grok_tts_voices_url,
-    resolve_grok_tts_websocket_url, resolve_vercel_models_url, resolve_vercel_responses_url,
-    vercel_headers,
+    resolve_grok_tts_websocket_url, resolve_vercel_evaluation_url, resolve_vercel_models_url,
+    resolve_vercel_responses_url, vercel_evaluation_headers, vercel_headers,
 };
 
 /// Established xAI TTS WebSocket carried by the proxy-aware HTTP client.
@@ -406,6 +407,46 @@ impl CodexClient {
 
         let value = response.json::<Value>().await?;
         vercel_model_list_from_value(&value)
+    }
+
+    /// Sends a Vercel AI Gateway evaluation request and returns its typed answer body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this client is not configured for Vercel, the
+    /// Gateway rejects the request, or the response body cannot be parsed.
+    pub async fn complete_vercel_evaluation(
+        &self,
+        request: &EvaluationRequest,
+        credentials: &Credentials,
+    ) -> Result<Value> {
+        if self.provider != Provider::Vercel {
+            return Err(Error::config(
+                "Vercel AI Gateway evaluation requires a Vercel upstream",
+            ));
+        }
+
+        let url = resolve_vercel_evaluation_url(&self.base_url);
+        let headers = vercel_evaluation_headers(credentials, request.vercel_model_id())?;
+        let body = request.gateway_body();
+        crate::logging::trace_json("upstream.vercel.evaluation.request", &body);
+        let response = self
+            .http
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+        tracing::trace!(
+            event = "upstream.vercel.evaluation_response_started",
+            url = %url,
+            status = response.status().as_u16()
+        );
+        if !response.status().is_success() {
+            return Err(parse_error_response(response, Provider::Vercel).await);
+        }
+
+        response.json::<Value>().await.map_err(Into::into)
     }
 
     /// Sends a native xAI text-to-speech request and returns its raw response.

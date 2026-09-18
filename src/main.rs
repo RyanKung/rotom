@@ -171,7 +171,7 @@ enum Command {
     },
     #[command(
         about = "Serve the OpenAI- and Anthropic-compatible HTTP API",
-        long_about = "Serve OpenAI- and Anthropic-compatible endpoints backed by the selected provider, plus Grok-native REST and WebSocket /v1/tts and /v1/tts/voices when Grok credentials are available. Other routes include /v1/models, /v1/chat/completions, /v1/responses, Responses resource compatibility routes, /v1/messages, /v1/messages/count_tokens, /v1/messages/batches, and /v1/auth/refresh."
+        long_about = "Serve OpenAI- and Anthropic-compatible endpoints backed by the selected provider, plus Vercel evaluation models and Grok-native REST/WebSocket /v1/tts routes when those credentials are available. Other routes include /v1/models, /v1/chat/completions, /v1/evaluations, /v1/responses, Responses resource compatibility routes, /v1/messages, /v1/messages/count_tokens, /v1/messages/batches, and /v1/auth/refresh."
     )]
     Serve {
         #[arg(
@@ -688,12 +688,13 @@ async fn running_daemon_base_url(http: &Client) -> Option<String> {
 }
 
 fn daemon_endpoint_lines(base_url: &str) -> Vec<String> {
-    const ENDPOINTS: [(&str, &str); 20] = [
+    const ENDPOINTS: [(&str, &str); 21] = [
         ("GET", "/health"),
         ("GET", "/v1/status"),
         ("GET", "/v1/models"),
         ("POST", "/v1/auth/refresh"),
         ("POST", "/v1/chat/completions"),
+        ("POST", "/v1/evaluations"),
         ("POST", "/v1/responses"),
         ("GET,DELETE", "/v1/responses/{response_id}"),
         ("POST", "/v1/responses/{response_id}/cancel"),
