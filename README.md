@@ -116,6 +116,31 @@ curl http://127.0.0.1:14550/v1/messages \
   -d '{"model": "gpt-6-astra", "max_tokens": 1024, "messages": [{"role": "user", "content": "hello"}]}'
 ```
 
+Vercel evaluation models:
+
+```bash
+curl http://127.0.0.1:14550/v1/evaluations \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer local-secret' \
+  -d '{
+    "model": "typesafe-ai/jev",
+    "state": "The build failed with exit code 1.",
+    "questions": {
+      "passed": {
+        "type": "boolean",
+        "instructions": "Did the build succeed?",
+        "criteria": {
+          "true": "exit code 0",
+          "false": "any non-zero exit code"
+        }
+      }
+    }
+  }'
+```
+
+Evaluation models return typed answers and probabilities. They are not text
+generation models and should not be sent to `/v1/responses`.
+
 Grok-native text to speech:
 
 ```bash
@@ -205,6 +230,12 @@ OpenAI:
   input_tokens)
 - `POST /v1/images/generations`
 
+Vercel Evaluation:
+
+- `POST /v1/evaluations` for Gateway evaluation models such as
+  `typesafe-ai/jev`
+- Request shape: `model`, `state`, and typed `questions`
+
 Grok Voice:
 
 - `POST /v1/tts`, `GET /v1/tts` (WebSocket upgrade), `GET /v1/tts/voices`
@@ -238,11 +269,12 @@ quietly drops controls the upstream cannot honor.
   tool results, history, inline base64 images/documents). Remote image/document
   URLs are rejected, not fetched.
 - **Vercel**: uses Vercel AI Gateway's OpenAI-compatible `/v1/responses`
-  endpoint with `provider/model` ids. When serving, rotom fetches the live
-  Gateway `/v1/models` list with the saved Vercel key and falls back to a small
-  built-in list if Gateway is unavailable. Prefix a model with `vercel/` to
-  force Vercel routing when another rotom provider also recognizes that model
-  family; rotom strips the prefix before forwarding upstream.
+  endpoint with `provider/model` ids for text models, and `/v1/evaluations` for
+  Gateway evaluation models like `typesafe-ai/jev`. When serving, rotom fetches
+  the live Gateway `/v1/models` list with the saved Vercel key and falls back to
+  a small built-in list if Gateway is unavailable. Prefix a model with
+  `vercel/` to force Vercel routing when another rotom provider also recognizes
+  that model family; rotom strips the prefix before forwarding upstream.
 ## Disclaimer
 
 rotom is an unofficial compatibility tool. It is not affiliated with, endorsed

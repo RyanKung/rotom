@@ -17,6 +17,7 @@ use crate::{
         convert::responses_to_upstream_request,
     },
     config::{Credentials, Provider},
+    evaluation::EvaluationRequest,
     openai::{
         response::{
             ImageGenerationResponse, ResponseCompaction, ResponseInputTokens, ResponseObject,
@@ -251,6 +252,45 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Respon
             } else {
                 Json(state.models).into_response()
             }
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+/// Evaluates shared state against typed questions using a Vercel evaluation model.
+pub async fn evaluations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<EvaluationRequest>,
+) -> Response {
+    trace_request("evaluations", &request);
+    if let Err(error) = authorize(&headers, state.api_key.as_deref()) {
+        return error.into_response();
+    }
+
+    let Some(upstream) = state.upstream_for_model(&request.model) else {
+        return Error::config(format!("not logged in for model {}", request.model)).into_response();
+    };
+    if upstream.provider != Provider::Vercel {
+        return Error::config(format!(
+            "evaluation model {} requires a Vercel AI Gateway upstream",
+            request.model
+        ))
+        .into_response();
+    }
+
+    let credentials = match upstream.token_manager.credentials().await {
+        Ok(credentials) => credentials,
+        Err(error) => return error.into_response(),
+    };
+    match upstream
+        .client
+        .complete_vercel_evaluation(&request, &credentials)
+        .await
+    {
+        Ok(value) => {
+            trace_response("evaluations", &value);
+            Json(value).into_response()
         }
         Err(error) => error.into_response(),
     }

@@ -237,6 +237,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/auth/refresh", post(handlers::manual_refresh))
         .route("/v1/status", get(handlers::status))
         .route("/v1/models", get(handlers::models))
+        .route("/v1/evaluations", post(handlers::evaluations))
         .route("/v1/responses", post(handlers::responses))
         .route("/v1/responses/compact", post(handlers::compact_response))
         .route(

@@ -493,6 +493,7 @@ fn formats_daemon_endpoint_lines_with_base_url() {
 
     assert!(lines.contains(&"  GET        http://127.0.0.1:14550/health".to_owned()));
     assert!(lines.contains(&"  POST       http://127.0.0.1:14550/v1/chat/completions".to_owned()));
+    assert!(lines.contains(&"  POST       http://127.0.0.1:14550/v1/evaluations".to_owned()));
     assert!(lines.contains(&"  GET,POST   http://127.0.0.1:14550/v1/messages/batches".to_owned()));
     assert!(
         lines.contains(&"  POST       http://127.0.0.1:14550/v1/images/generations".to_owned())
