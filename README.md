@@ -89,7 +89,8 @@ rotom models --provider grok      # one provider
 
 Common ids include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`,
 `gpt-5.6-luna`, `grok-4.6`, Kiro's `claude-*` family, and Vercel AI Gateway
-ids like `openai/gpt-6-astra` or `anthropic/claude-sonnet-5`.
+ids like `openai/gpt-6-astra`, `anthropic/claude-sonnet-5`, or
+`typesafe-ai/jev`.
 
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-5.5`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
@@ -237,9 +238,11 @@ quietly drops controls the upstream cannot honor.
   tool results, history, inline base64 images/documents). Remote image/document
   URLs are rejected, not fetched.
 - **Vercel**: uses Vercel AI Gateway's OpenAI-compatible `/v1/responses`
-  endpoint with `provider/model` ids. Prefix a model with `vercel/` to force
-  Vercel routing when another rotom provider also recognizes that model family;
-  rotom strips the prefix before forwarding upstream.
+  endpoint with `provider/model` ids. When serving, rotom fetches the live
+  Gateway `/v1/models` list with the saved Vercel key and falls back to a small
+  built-in list if Gateway is unavailable. Prefix a model with `vercel/` to
+  force Vercel routing when another rotom provider also recognizes that model
+  family; rotom strips the prefix before forwarding upstream.
 ## Disclaimer
 
 rotom is an unofficial compatibility tool. It is not affiliated with, endorsed

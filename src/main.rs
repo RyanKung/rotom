@@ -19,18 +19,20 @@ use rotom::{
     logging::{self, LogLevel},
     models::{
         highlight_model_ids_for_provider, resolve_model_ids_for_provider,
-        resolve_model_list_for_providers,
+        resolve_model_list_for_provider,
     },
     oauth::{
         CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
         create_authorization_flow, default_cli_database_path, default_desktop_token_path,
         parse_kiro_authorization_callback,
     },
+    openai::response::ModelList,
     server::{AppState, UpstreamState, serve_all},
     timefmt::format_duration,
     token::TokenManager,
 };
 use std::{
+    collections::HashSet,
     io::{self, IsTerminal, Write},
     net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -447,7 +449,7 @@ async fn run(cli: Cli) -> Result<()> {
                     client: CodexClient::new_for_provider(http.clone(), *provider),
                 });
             }
-            let model_list = resolve_model_list_for_providers(&providers)?;
+            let model_list = resolve_model_list_for_upstreams(&upstreams).await?;
             println!("listening on {}", format_bind_urls(&effective_bind));
             for upstream in &upstreams {
                 spawn_token_expiry_display(upstream.token_manager.clone());
@@ -476,6 +478,45 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),
     }
+}
+
+async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result<ModelList> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+
+    for upstream in upstreams {
+        let models = if upstream.provider == Provider::Vercel {
+            match upstream.token_manager.credentials().await {
+                Ok(credentials) => match upstream.client.list_vercel_models(&credentials).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "falling back to built-in Vercel AI Gateway model list"
+                        );
+                        resolve_model_list_for_provider(upstream.provider)?
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "falling back to built-in Vercel AI Gateway model list"
+                    );
+                    resolve_model_list_for_provider(upstream.provider)?
+                }
+            }
+        } else {
+            resolve_model_list_for_provider(upstream.provider)?
+        };
+
+        for model in models.data {
+            if seen.insert(model.id.clone()) {
+                ids.push((model.id, model.owned_by));
+            }
+        }
+    }
+
+    Ok(ModelList::from_id_owners(ids))
 }
 
 /// Reinstalls rotom from crates.io through Cargo.

@@ -282,6 +282,17 @@ pub fn resolve_vercel_responses_url(base_url: &str) -> String {
     }
 }
 
+/// Resolves a configured Vercel AI Gateway base URL into the model-list endpoint.
+#[must_use]
+pub fn resolve_vercel_models_url(base_url: &str) -> String {
+    let normalized = base_url.trim_end_matches('/');
+    if normalized.ends_with("/models") {
+        normalized.to_owned()
+    } else {
+        format!("{normalized}/models")
+    }
+}
+
 /// Resolves a configured xAI base URL into the native TTS endpoint.
 #[must_use]
 pub fn resolve_grok_tts_url(base_url: &str) -> String {
@@ -733,6 +744,14 @@ mod tests {
         assert_eq!(
             adapter.responses_url("https://ai-gateway.vercel.sh/v1/responses"),
             "https://ai-gateway.vercel.sh/v1/responses"
+        );
+        assert_eq!(
+            resolve_vercel_models_url("https://ai-gateway.vercel.sh/v1"),
+            "https://ai-gateway.vercel.sh/v1/models"
+        );
+        assert_eq!(
+            resolve_vercel_models_url("https://ai-gateway.vercel.sh/v1/models"),
+            "https://ai-gateway.vercel.sh/v1/models"
         );
         assert_eq!(
             adapter.resource_capabilities(),

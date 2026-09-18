@@ -262,6 +262,7 @@ fn formats_models_grouped_by_provider() {
     assert!(output.contains("  gpt-5.6-sol\n"));
     assert!(output.contains("Grok (grok)\n  grok-4.6"));
     assert!(output.contains("Vercel AI Gateway (vercel)\n  openai/gpt-6-astra"));
+    assert!(output.contains("  typesafe-ai/jev\n"));
     assert!(!output.contains("Kiro (kiro)"));
     assert!(output.contains("\n\nGrok (grok)"));
 }
@@ -291,6 +292,7 @@ fn formats_vercel_models() {
     assert!(output.starts_with("Vercel AI Gateway (vercel)\n"));
     assert!(output.contains("  openai/gpt-6-astra\n"));
     assert!(output.contains("  anthropic/claude-sonnet-5\n"));
+    assert!(output.contains("  typesafe-ai/jev\n"));
 }
 
 #[test]

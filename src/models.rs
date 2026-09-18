@@ -45,6 +45,7 @@ pub const VERCEL_MODELS: &[&str] = &[
     "openai/gpt-6-astra",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-opus-5",
+    "typesafe-ai/jev",
 ];
 
 const HIGHLIGHT_MODEL_LIMIT: usize = 4;
@@ -472,6 +473,7 @@ mod tests {
                 "openai/gpt-6-astra".to_owned(),
                 "anthropic/claude-sonnet-5".to_owned(),
                 "anthropic/claude-opus-5".to_owned(),
+                "typesafe-ai/jev".to_owned(),
             ]
         );
     }
@@ -581,6 +583,10 @@ mod tests {
         );
         assert_eq!(
             provider_for_model("anthropic/claude-sonnet-5"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(
+            provider_for_model("typesafe-ai/jev"),
             Some(Provider::Vercel)
         );
         assert_eq!(
