@@ -5,9 +5,9 @@
 
 //! Core library for `rotom`.
 //!
-//! The library owns the OAuth flow, token lifecycle, upstream Codex client,
-//! HTTP server, and status inspection helpers used by both the CLI binary and
-//! any embedding integration.
+//! The library owns provider credential flows, token lifecycle, upstream API
+//! clients, HTTP server, and status inspection helpers used by both the CLI
+//! binary and any embedding integration.
 
 /// Anthropic-compatible Messages API request, response, and SSE adapters.
 pub mod anthropic;
@@ -36,7 +36,7 @@ pub mod status;
 pub(crate) mod testsupport;
 /// Shared time formatting helpers for CLI and HTTP output.
 pub mod timefmt;
-/// OAuth credential caching and refresh orchestration.
+/// Provider credential caching and refresh orchestration.
 pub mod token;
 
 /// Shared crate error type.

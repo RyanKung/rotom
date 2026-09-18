@@ -12,7 +12,7 @@ use std::{
 
 const REMOVED_CURSOR_PROVIDER: &str = "cursor";
 
-/// Upstream OAuth provider used by stored credentials and runtime requests.
+/// Upstream credential provider used by stored credentials and runtime requests.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Provider {
@@ -23,6 +23,8 @@ pub enum Provider {
     Grok,
     /// Kiro credentials imported from the official local IDE or CLI stores.
     Kiro,
+    /// Vercel AI Gateway API key backed by the OpenAI-compatible gateway API.
+    Vercel,
 }
 
 impl Provider {
@@ -33,6 +35,7 @@ impl Provider {
             Self::Codex => "codex",
             Self::Grok => "grok",
             Self::Kiro => "kiro",
+            Self::Vercel => "vercel",
         }
     }
 
@@ -43,7 +46,14 @@ impl Provider {
             Self::Codex => "Codex",
             Self::Grok => "Grok",
             Self::Kiro => "Kiro",
+            Self::Vercel => "Vercel",
         }
+    }
+
+    /// Returns whether credentials for this provider are static bearer tokens.
+    #[must_use]
+    pub const fn uses_static_bearer_token(self) -> bool {
+        matches!(self, Self::Vercel)
     }
 }
 
@@ -61,20 +71,21 @@ impl FromStr for Provider {
             "codex" | "openai-codex" | "openai" => Ok(Self::Codex),
             "grok" | "xai" | "xai-oauth" | "grok-oauth" => Ok(Self::Grok),
             "kiro" | "kiro-cli" | "kiro-desktop" => Ok(Self::Kiro),
+            "vercel" | "vercel-ai-gateway" | "ai-gateway" => Ok(Self::Vercel),
             other => Err(Error::config(format!("unknown provider: {other}"))),
         }
     }
 }
 
-/// Persisted OAuth credentials used to authenticate API requests.
+/// Persisted provider credentials used to authenticate API requests.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Credentials {
-    /// OAuth provider that issued this token pair.
+    /// Provider that issued or accepts these credentials.
     #[serde(default)]
     pub provider: Provider,
     /// Bearer token used for authenticated API calls.
     pub access_token: String,
-    /// Long-lived token used to mint a new access token.
+    /// Long-lived token used to mint a new access token, or empty for static API keys.
     pub refresh_token: String,
     /// Access-token expiration timestamp, expressed as Unix seconds.
     pub expires_at: i64,
@@ -145,7 +156,7 @@ pub struct AppConfig {
     /// Optional fallback model used for known unsupported Anthropic model ids.
     #[serde(default)]
     pub model_fallback: Option<String>,
-    /// Default upstream OAuth provider used by `serve` and `daemon install`.
+    /// Default upstream credential provider used by `serve` and `daemon install`.
     #[serde(default)]
     pub provider: Option<Provider>,
 }
@@ -493,6 +504,17 @@ mod tests {
     #[test]
     fn removed_cursor_provider_is_rejected() {
         assert!(Provider::from_str("cursor").is_err());
+    }
+
+    #[test]
+    fn vercel_provider_aliases_parse() {
+        assert_eq!(Provider::from_str("vercel").unwrap(), Provider::Vercel);
+        assert_eq!(
+            Provider::from_str("vercel-ai-gateway").unwrap(),
+            Provider::Vercel
+        );
+        assert_eq!(Provider::Vercel.as_str(), "vercel");
+        assert!(Provider::Vercel.uses_static_bearer_token());
     }
 
     #[test]

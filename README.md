@@ -7,8 +7,8 @@
 [![CI](https://github.com/RyanKung/rotom/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/ci.yml)
 [![Release](https://github.com/RyanKung/rotom/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/release.yml)
 
-Use your Codex, Grok, or Kiro OAuth login from any tool that speaks the OpenAI
-or Anthropic API.
+Use your Codex, Grok, Kiro, or Vercel AI Gateway credentials from any tool that
+speaks the OpenAI or Anthropic API.
 
 rotom is a small local gateway. You log in once, run `rotom serve`, and point
 Claude Code, the OpenAI/Anthropic SDKs, or any compatible client at the local
@@ -58,15 +58,18 @@ claude -p "Reply with the single word OK"
 `rotom login` lists the providers and runs the chosen flow. Skip the prompt with
 a flag:
 
-| Provider     | Command                        |
-| ------------ | ------------------------------ |
-| OpenAI/Codex | `rotom login --provider openai`|
-| Grok (xAI)   | `rotom login --provider grok`  |
-| Kiro         | `rotom login --kiro`           |
+| Provider          | Command                         |
+| ----------------- | ------------------------------- |
+| OpenAI/Codex      | `rotom login --provider openai` |
+| Grok (xAI)        | `rotom login --provider grok`   |
+| Kiro              | `rotom login --kiro`            |
+| Vercel AI Gateway | `rotom login --provider vercel` |
 
 - **Codex / Grok**: browser login, then paste the redirected
   `http://localhost:.../auth/callback?...` URL back into the terminal.
 - **Kiro**: browser login via Kiro's portal callback (Google/GitHub).
+- **Vercel**: paste an AI Gateway API key, or set `AI_GATEWAY_API_KEY` before
+  running the login command.
 
 Credentials are stored per provider in `~/.rotom/auth.json` (override with
 `ROTOM_AUTH_FILE` or `ROTOM_HOME`). Logging in to one provider never replaces
@@ -84,8 +87,9 @@ rotom models                      # everything rotom exposes
 rotom models --provider grok      # one provider
 ```
 
-Common ids include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`,
-`grok-4.6`, and Kiro's `claude-*` family.
+Common ids include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `grok-4.6`, Kiro's `claude-*` family, and Vercel AI Gateway
+ids like `openai/gpt-6-astra` or `anthropic/claude-sonnet-5`.
 
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-5.5`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
@@ -182,7 +186,7 @@ service definition.
 
 ```bash
 rotom status                      # version, token expiry, auth, endpoints
-rotom refresh                     # refresh OAuth tokens for all providers
+rotom refresh                     # refresh saved provider credentials
 rotom config                      # interactive config (~/.rotom/config.json)
 rotom update                      # update to the latest release
 ```
@@ -232,10 +236,14 @@ quietly drops controls the upstream cannot honor.
 - **Kiro**: mapped to Kiro's `GenerateAssistantResponse` schema (text, tools,
   tool results, history, inline base64 images/documents). Remote image/document
   URLs are rejected, not fetched.
+- **Vercel**: uses Vercel AI Gateway's OpenAI-compatible `/v1/responses`
+  endpoint with `provider/model` ids. Prefix a model with `vercel/` to force
+  Vercel routing when another rotom provider also recognizes that model family;
+  rotom strips the prefix before forwarding upstream.
 ## Disclaimer
 
 rotom is an unofficial compatibility tool. It is not affiliated with, endorsed
-by, or supported by OpenAI, Anthropic, xAI, or Kiro.
+by, or supported by OpenAI, Anthropic, xAI, Kiro, or Vercel.
 
 You are responsible for complying with the terms and account restrictions of
 your upstream provider. In particular, do not assume personal OAuth access can

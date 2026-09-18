@@ -40,10 +40,11 @@ use url::Url;
 /// Default upstream base URL for `Codex` response requests.
 pub use crate::codex::upstream::DEFAULT_CODEX_BASE_URL;
 pub use crate::codex::upstream::{
-    ResponseCreationStrategy, ResponseResourceCapabilities, ResponseResourceCapability,
-    codex_headers, grok_headers, grok_tts_headers, grok_tts_voices_headers,
-    grok_tts_websocket_headers, resolve_codex_url, resolve_grok_responses_url,
-    resolve_grok_tts_url, resolve_grok_tts_voices_url, resolve_grok_tts_websocket_url,
+    DEFAULT_VERCEL_AI_GATEWAY_BASE_URL, ResponseCreationStrategy, ResponseResourceCapabilities,
+    ResponseResourceCapability, codex_headers, grok_headers, grok_tts_headers,
+    grok_tts_voices_headers, grok_tts_websocket_headers, resolve_codex_url,
+    resolve_grok_responses_url, resolve_grok_tts_url, resolve_grok_tts_voices_url,
+    resolve_grok_tts_websocket_url, resolve_vercel_responses_url, vercel_headers,
 };
 
 /// Established xAI TTS WebSocket carried by the proxy-aware HTTP client.
@@ -807,16 +808,22 @@ mod tests {
     fn selects_upstream_provider_adapter() {
         let http = Client::new();
         let codex = CodexClient::new_for_provider(http.clone(), Provider::Codex);
-        let grok = CodexClient::new_for_provider(http, Provider::Grok);
+        let grok = CodexClient::new_for_provider(http.clone(), Provider::Grok);
+        let vercel = CodexClient::new_for_provider(http, Provider::Vercel);
 
         assert_eq!(codex.upstream_provider().provider(), Provider::Codex);
         assert_eq!(grok.upstream_provider().provider(), Provider::Grok);
+        assert_eq!(vercel.upstream_provider().provider(), Provider::Vercel);
         assert_eq!(
             codex.response_creation_strategy(),
             ResponseCreationStrategy::ChatCompatibility
         );
         assert_eq!(
             grok.response_creation_strategy(),
+            ResponseCreationStrategy::NativeResponses
+        );
+        assert_eq!(
+            vercel.response_creation_strategy(),
             ResponseCreationStrategy::NativeResponses
         );
     }

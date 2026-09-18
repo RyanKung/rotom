@@ -43,6 +43,10 @@ fn model_support_normalization_accepts_provider_prefixes() {
         normalize_model_for_support("openai-codex/gpt-5.5"),
         "gpt-5.5"
     );
+    assert_eq!(
+        normalize_model_for_support("vercel/openai/gpt-6-astra"),
+        "openai/gpt-6-astra"
+    );
 }
 
 #[test]

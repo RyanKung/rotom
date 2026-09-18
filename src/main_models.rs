@@ -1,7 +1,12 @@
 fn models(provider: Option<String>) -> Result<()> {
     let providers = match provider {
         Some(provider) => vec![provider.parse()?],
-        None => vec![Provider::Codex, Provider::Grok, Provider::Kiro],
+        None => vec![
+            Provider::Codex,
+            Provider::Grok,
+            Provider::Kiro,
+            Provider::Vercel,
+        ],
     };
     print!("{}", format_models(&providers));
     Ok(())
@@ -35,6 +40,7 @@ const fn model_provider_label(provider: Provider) -> &'static str {
         Provider::Codex => "OpenAI",
         Provider::Grok => "Grok",
         Provider::Kiro => "Kiro",
+        Provider::Vercel => "Vercel AI Gateway",
     }
 }
 

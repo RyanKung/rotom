@@ -321,14 +321,14 @@ fn upstream_stream_value(provider: Provider, request: &ResponsesRequest) -> bool
         // Codex currently expects SSE upstream even when the downstream API
         // requested a one-shot JSON response.
         Provider::Codex => true,
-        Provider::Grok | Provider::Kiro => request.wants_stream(),
+        Provider::Grok | Provider::Kiro | Provider::Vercel => request.wants_stream(),
     }
 }
 
 fn upstream_store_value(provider: Provider, request: &ResponsesRequest, input: &[Value]) -> bool {
     match provider {
         Provider::Codex => request.should_store() && !input_requires_stateless_replay(input),
-        Provider::Grok => request.should_store(),
+        Provider::Grok | Provider::Vercel => request.should_store(),
         Provider::Kiro => false,
     }
 }
@@ -341,7 +341,7 @@ const fn should_include_instructions(
     match provider {
         Provider::Codex => true,
         Provider::Grok => !instructions.is_empty() && request.previous_response_id.is_none(),
-        Provider::Kiro => !instructions.is_empty(),
+        Provider::Kiro | Provider::Vercel => !instructions.is_empty(),
     }
 }
 
@@ -834,6 +834,31 @@ mod tests {
 
         assert_eq!(body["stream"], false);
         assert!(body.get("instructions").is_none());
+    }
+
+    #[test]
+    fn vercel_responses_requests_preserve_gateway_controls() {
+        let request: ResponsesRequest = serde_json::from_value(json!({
+            "model": "openai/gpt-6-astra",
+            "stream": false,
+            "store": true,
+            "instructions": "be terse",
+            "temperature": 0.2,
+            "input": "hello"
+        }))
+        .unwrap();
+        let input = vec![json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        })];
+
+        let body = responses_to_upstream_request(Provider::Vercel, &request, &input).unwrap();
+
+        assert_eq!(body["model"], "openai/gpt-6-astra");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["store"], true);
+        assert_eq!(body["instructions"], "be terse");
+        assert_eq!(body["temperature"], 0.2);
     }
 
     #[test]
