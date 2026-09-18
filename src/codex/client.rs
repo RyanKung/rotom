@@ -12,7 +12,7 @@ use crate::{
         upstream::{UpstreamProvider, adapter_for_provider},
     },
     config::{Credentials, Provider, now_unix},
-    evaluation::EvaluationRequest,
+    evaluation::{EvaluationRequest, resolve_vercel_evaluation_url, vercel_evaluation_headers},
     openai::response::{
         AssistantMessage, ChatChoice, ChatCompletionChunk, ChatCompletionResponse, ModelList,
         chunk_finished, chunk_with_content, chunk_with_role, chunk_with_tool_call,
@@ -45,8 +45,8 @@ pub use crate::codex::upstream::{
     ResponseResourceCapability, codex_headers, grok_headers, grok_tts_headers,
     grok_tts_voices_headers, grok_tts_websocket_headers, resolve_codex_url,
     resolve_grok_responses_url, resolve_grok_tts_url, resolve_grok_tts_voices_url,
-    resolve_grok_tts_websocket_url, resolve_vercel_evaluation_url, resolve_vercel_models_url,
-    resolve_vercel_responses_url, vercel_evaluation_headers, vercel_headers,
+    resolve_grok_tts_websocket_url, resolve_vercel_models_url, resolve_vercel_responses_url,
+    vercel_headers,
 };
 
 /// Established xAI TTS WebSocket carried by the proxy-aware HTTP client.

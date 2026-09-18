@@ -20,8 +20,6 @@ const VERCEL_UPSTREAM: VercelUpstream = VercelUpstream;
 pub const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
 /// Default upstream base URL for Vercel AI Gateway OpenAI-compatible requests.
 pub const DEFAULT_VERCEL_AI_GATEWAY_BASE_URL: &str = "https://ai-gateway.vercel.sh/v1";
-/// Default Vercel AI Gateway base URL for AI SDK provider protocol requests.
-pub const DEFAULT_VERCEL_AI_GATEWAY_PROVIDER_BASE_URL: &str = "https://ai-gateway.vercel.sh/v4/ai";
 
 /// Upstream support level for one Responses API resource operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,29 +293,6 @@ pub fn resolve_vercel_models_url(base_url: &str) -> String {
     }
 }
 
-/// Resolves a configured Vercel AI Gateway base URL into the evaluation endpoint.
-#[must_use]
-pub fn resolve_vercel_evaluation_url(base_url: &str) -> String {
-    let normalized = base_url.trim_end_matches('/');
-    if normalized.ends_with("/evaluation-model") {
-        return normalized.to_owned();
-    }
-    if normalized.ends_with("/v4/ai") {
-        return format!("{normalized}/evaluation-model");
-    }
-    if let Some(root) = normalized
-        .strip_suffix("/v1/responses")
-        .or_else(|| normalized.strip_suffix("/v1/models"))
-        .or_else(|| normalized.strip_suffix("/v1"))
-    {
-        return format!("{root}/v4/ai/evaluation-model");
-    }
-    if normalized == "https://ai-gateway.vercel.sh" {
-        return format!("{DEFAULT_VERCEL_AI_GATEWAY_PROVIDER_BASE_URL}/evaluation-model");
-    }
-    format!("{normalized}/evaluation-model")
-}
-
 /// Resolves a configured xAI base URL into the native TTS endpoint.
 #[must_use]
 pub fn resolve_grok_tts_url(base_url: &str) -> String {
@@ -427,40 +402,6 @@ pub fn vercel_headers(credentials: &Credentials) -> Result<HeaderMap> {
     headers.insert(USER_AGENT, HeaderValue::from_static("rotom"));
     headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    Ok(headers)
-}
-
-/// Builds HTTP headers for authenticated Vercel AI Gateway evaluation requests.
-///
-/// # Errors
-///
-/// Returns an error when the bearer token or model id cannot be represented as
-/// a header.
-pub fn vercel_evaluation_headers(credentials: &Credentials, model_id: &str) -> Result<HeaderMap> {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        header_value(&format!("Bearer {}", credentials.access_token))?,
-    );
-    headers.insert(USER_AGENT, HeaderValue::from_static("rotom"));
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    headers.insert(
-        HeaderName::from_static("ai-gateway-protocol-version"),
-        HeaderValue::from_static("0.0.1"),
-    );
-    headers.insert(
-        HeaderName::from_static("ai-gateway-auth-method"),
-        HeaderValue::from_static("api-key"),
-    );
-    headers.insert(
-        HeaderName::from_static("ai-evaluation-model-specification-version"),
-        HeaderValue::from_static("4"),
-    );
-    headers.insert(
-        HeaderName::from_static("ai-model-id"),
-        header_value(model_id)?,
-    );
     Ok(headers)
 }
 
@@ -813,22 +754,6 @@ mod tests {
             "https://ai-gateway.vercel.sh/v1/models"
         );
         assert_eq!(
-            resolve_vercel_evaluation_url("https://ai-gateway.vercel.sh/v1"),
-            "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-        );
-        assert_eq!(
-            resolve_vercel_evaluation_url("https://ai-gateway.vercel.sh/v1/responses"),
-            "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-        );
-        assert_eq!(
-            resolve_vercel_evaluation_url("https://ai-gateway.vercel.sh/v4/ai"),
-            "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-        );
-        assert_eq!(
-            resolve_vercel_evaluation_url("https://ai-gateway.vercel.sh/v4/ai/evaluation-model"),
-            "https://ai-gateway.vercel.sh/v4/ai/evaluation-model"
-        );
-        assert_eq!(
             adapter.resource_capabilities(),
             ResponseResourceCapabilities {
                 retrieve: ResponseResourceCapability::LocalCompat,
@@ -847,27 +772,6 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 128);
         assert_eq!(headers["authorization"], "Bearer token");
         assert_eq!(headers["content-type"], "application/json");
-    }
-
-    #[test]
-    fn builds_vercel_evaluation_headers() {
-        let credentials = Credentials {
-            provider: Provider::Vercel,
-            access_token: "token".into(),
-            refresh_token: String::new(),
-            expires_at: 1,
-            account_id: String::new(),
-        };
-
-        let headers = vercel_evaluation_headers(&credentials, "typesafe-ai/jev").unwrap();
-
-        assert_eq!(headers["authorization"], "Bearer token");
-        assert_eq!(headers["accept"], "application/json");
-        assert_eq!(headers["content-type"], "application/json");
-        assert_eq!(headers["ai-gateway-protocol-version"], "0.0.1");
-        assert_eq!(headers["ai-gateway-auth-method"], "api-key");
-        assert_eq!(headers["ai-evaluation-model-specification-version"], "4");
-        assert_eq!(headers["ai-model-id"], "typesafe-ai/jev");
     }
 
     #[test]
