@@ -191,6 +191,7 @@ fn normalize_model_for_support(model: &str) -> String {
         .strip_prefix("xai/")
         .or_else(|| normalized.strip_prefix("grok/"))
         .or_else(|| normalized.strip_prefix("kiro/"))
+        .or_else(|| normalized.strip_prefix("vercel/"))
         .unwrap_or(&normalized)
         .to_owned()
 }

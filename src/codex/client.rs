@@ -13,8 +13,8 @@ use crate::{
     },
     config::{Credentials, Provider, now_unix},
     openai::response::{
-        AssistantMessage, ChatChoice, ChatCompletionChunk, ChatCompletionResponse, chunk_finished,
-        chunk_with_content, chunk_with_role, chunk_with_tool_call,
+        AssistantMessage, ChatChoice, ChatCompletionChunk, ChatCompletionResponse, ModelList,
+        chunk_finished, chunk_with_content, chunk_with_role, chunk_with_tool_call,
     },
 };
 use futures_util::{Stream, StreamExt};
@@ -27,7 +27,7 @@ use reqwest::{
     },
 };
 use serde_json::Value;
-use std::pin::Pin;
+use std::{collections::HashSet, pin::Pin};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{
@@ -40,10 +40,12 @@ use url::Url;
 /// Default upstream base URL for `Codex` response requests.
 pub use crate::codex::upstream::DEFAULT_CODEX_BASE_URL;
 pub use crate::codex::upstream::{
-    ResponseCreationStrategy, ResponseResourceCapabilities, ResponseResourceCapability,
-    codex_headers, grok_headers, grok_tts_headers, grok_tts_voices_headers,
-    grok_tts_websocket_headers, resolve_codex_url, resolve_grok_responses_url,
-    resolve_grok_tts_url, resolve_grok_tts_voices_url, resolve_grok_tts_websocket_url,
+    DEFAULT_VERCEL_AI_GATEWAY_BASE_URL, ResponseCreationStrategy, ResponseResourceCapabilities,
+    ResponseResourceCapability, codex_headers, grok_headers, grok_tts_headers,
+    grok_tts_voices_headers, grok_tts_websocket_headers, resolve_codex_url,
+    resolve_grok_responses_url, resolve_grok_tts_url, resolve_grok_tts_voices_url,
+    resolve_grok_tts_websocket_url, resolve_vercel_models_url, resolve_vercel_responses_url,
+    vercel_headers,
 };
 
 /// Established xAI TTS WebSocket carried by the proxy-aware HTTP client.
@@ -376,6 +378,36 @@ impl CodexClient {
         }
     }
 
+    /// Fetches Vercel AI Gateway's live OpenAI-compatible model list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this client is not configured for Vercel, the
+    /// Gateway rejects the request, or the response does not contain model ids.
+    pub async fn list_vercel_models(&self, credentials: &Credentials) -> Result<ModelList> {
+        if self.provider != Provider::Vercel {
+            return Err(Error::config(
+                "Vercel AI Gateway model listing requires a Vercel upstream",
+            ));
+        }
+
+        let url = resolve_vercel_models_url(&self.base_url);
+        let mut headers = vercel_headers(credentials)?;
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        let response = self.http.get(&url).headers(headers).send().await?;
+        tracing::trace!(
+            event = "upstream.vercel.models_response_started",
+            url = %url,
+            status = response.status().as_u16()
+        );
+        if !response.status().is_success() {
+            return Err(parse_error_response(response, Provider::Vercel).await);
+        }
+
+        let value = response.json::<Value>().await?;
+        vercel_model_list_from_value(&value)
+    }
+
     /// Sends a native xAI text-to-speech request and returns its raw response.
     ///
     /// The response may contain audio bytes or JSON when the request enables
@@ -686,6 +718,40 @@ impl CodexClient {
     }
 }
 
+fn vercel_model_list_from_value(value: &Value) -> Result<ModelList> {
+    let Some(data) = value.get("data").and_then(Value::as_array) else {
+        return Err(Error::upstream(
+            "Vercel AI Gateway models response did not include a data array",
+        ));
+    };
+
+    let mut seen = HashSet::new();
+    let ids = data
+        .iter()
+        .filter_map(vercel_model_id)
+        .filter(|id| seen.insert(id.clone()))
+        .map(|id| (id, "vercel-ai-gateway"))
+        .collect::<Vec<_>>();
+
+    if ids.is_empty() {
+        return Err(Error::upstream(
+            "Vercel AI Gateway models response did not include model ids",
+        ));
+    }
+
+    Ok(ModelList::from_id_owners(ids))
+}
+
+fn vercel_model_id(value: &Value) -> Option<String> {
+    value
+        .get("id")
+        .or_else(|| value.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn websocket_http_upgrade_url(
     websocket_url: &str,
 ) -> std::result::Result<Url, GrokTtsWebSocketConnectError> {
@@ -807,10 +873,12 @@ mod tests {
     fn selects_upstream_provider_adapter() {
         let http = Client::new();
         let codex = CodexClient::new_for_provider(http.clone(), Provider::Codex);
-        let grok = CodexClient::new_for_provider(http, Provider::Grok);
+        let grok = CodexClient::new_for_provider(http.clone(), Provider::Grok);
+        let vercel = CodexClient::new_for_provider(http, Provider::Vercel);
 
         assert_eq!(codex.upstream_provider().provider(), Provider::Codex);
         assert_eq!(grok.upstream_provider().provider(), Provider::Grok);
+        assert_eq!(vercel.upstream_provider().provider(), Provider::Vercel);
         assert_eq!(
             codex.response_creation_strategy(),
             ResponseCreationStrategy::ChatCompatibility
@@ -819,6 +887,54 @@ mod tests {
             grok.response_creation_strategy(),
             ResponseCreationStrategy::NativeResponses
         );
+        assert_eq!(
+            vercel.response_creation_strategy(),
+            ResponseCreationStrategy::NativeResponses
+        );
+    }
+
+    #[test]
+    fn parses_vercel_model_list_response() {
+        let value = serde_json::json!({
+            "object": "list",
+            "data": [
+                {"id": "openai/gpt-6-astra", "object": "model"},
+                {"id": "typesafe-ai/jev", "object": "model"},
+                {"id": "typesafe-ai/jev", "object": "model"},
+                {"model": "anthropic/claude-sonnet-5"}
+            ]
+        });
+
+        let models = vercel_model_list_from_value(&value).unwrap();
+
+        assert_eq!(models.object, "list");
+        assert_eq!(
+            models
+                .data
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "openai/gpt-6-astra",
+                "typesafe-ai/jev",
+                "anthropic/claude-sonnet-5",
+            ]
+        );
+        assert!(
+            models
+                .data
+                .iter()
+                .all(|model| model.owned_by == "vercel-ai-gateway")
+        );
+    }
+
+    #[test]
+    fn rejects_vercel_model_list_without_ids() {
+        let value = serde_json::json!({"object": "list", "data": [{"id": ""}]});
+
+        let error = vercel_model_list_from_value(&value).unwrap_err();
+
+        assert!(error.to_string().contains("did not include model ids"));
     }
 
     #[test]

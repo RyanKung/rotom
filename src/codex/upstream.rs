@@ -13,9 +13,13 @@ const CODEX_PRIORITY_SERVICE_TIER: &str = "priority";
 const CODEX_UPSTREAM: CodexUpstream = CodexUpstream;
 const GROK_UPSTREAM: GrokUpstream = GrokUpstream;
 const KIRO_UPSTREAM: KiroUpstream = KiroUpstream;
+/// Static adapter value for Vercel AI Gateway requests.
+const VERCEL_UPSTREAM: VercelUpstream = VercelUpstream;
 
 /// Default upstream base URL for `Codex` response requests.
 pub const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
+/// Default upstream base URL for Vercel AI Gateway OpenAI-compatible requests.
+pub const DEFAULT_VERCEL_AI_GATEWAY_BASE_URL: &str = "https://ai-gateway.vercel.sh/v1";
 
 /// Upstream support level for one Responses API resource operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,11 +196,54 @@ impl UpstreamProvider for KiroUpstream {
     fn prepare_request(&self, _body: &mut Value) {}
 }
 
+/// Adapter for Vercel AI Gateway's OpenAI-compatible API surface.
+struct VercelUpstream;
+
+impl UpstreamProvider for VercelUpstream {
+    fn provider(&self) -> Provider {
+        Provider::Vercel
+    }
+
+    fn default_base_url(&self) -> &'static str {
+        DEFAULT_VERCEL_AI_GATEWAY_BASE_URL
+    }
+
+    fn responses_url(&self, base_url: &str) -> String {
+        resolve_vercel_responses_url(base_url)
+    }
+
+    fn response_resource_url(&self, _base_url: &str, _response_id: &str) -> Option<String> {
+        None
+    }
+
+    fn resource_capabilities(&self) -> ResponseResourceCapabilities {
+        ResponseResourceCapabilities {
+            retrieve: ResponseResourceCapability::LocalCompat,
+            delete: ResponseResourceCapability::LocalCompat,
+            cancel: ResponseResourceCapability::Unsupported,
+            list_input_items: ResponseResourceCapability::LocalCompat,
+        }
+    }
+
+    fn response_creation_strategy(&self) -> ResponseCreationStrategy {
+        ResponseCreationStrategy::NativeResponses
+    }
+
+    fn headers(&self, credentials: &Credentials) -> Result<HeaderMap> {
+        vercel_headers(credentials)
+    }
+
+    fn prepare_request(&self, body: &mut Value) {
+        strip_vercel_model_prefix(body);
+    }
+}
+
 pub(super) fn adapter_for_provider(provider: Provider) -> &'static dyn UpstreamProvider {
     match provider {
         Provider::Codex => &CODEX_UPSTREAM,
         Provider::Grok => &GROK_UPSTREAM,
         Provider::Kiro => &KIRO_UPSTREAM,
+        Provider::Vercel => &VERCEL_UPSTREAM,
     }
 }
 
@@ -221,6 +268,28 @@ pub fn resolve_grok_responses_url(base_url: &str) -> String {
         normalized.to_owned()
     } else {
         format!("{normalized}/responses")
+    }
+}
+
+/// Resolves a configured Vercel AI Gateway base URL into the concrete Responses endpoint.
+#[must_use]
+pub fn resolve_vercel_responses_url(base_url: &str) -> String {
+    let normalized = base_url.trim_end_matches('/');
+    if normalized.ends_with("/responses") {
+        normalized.to_owned()
+    } else {
+        format!("{normalized}/responses")
+    }
+}
+
+/// Resolves a configured Vercel AI Gateway base URL into the model-list endpoint.
+#[must_use]
+pub fn resolve_vercel_models_url(base_url: &str) -> String {
+    let normalized = base_url.trim_end_matches('/');
+    if normalized.ends_with("/models") {
+        normalized.to_owned()
+    } else {
+        format!("{normalized}/models")
     }
 }
 
@@ -319,6 +388,23 @@ pub fn grok_headers(credentials: &Credentials) -> Result<HeaderMap> {
     Ok(headers)
 }
 
+/// Builds HTTP headers for authenticated Vercel AI Gateway requests.
+///
+/// # Errors
+///
+/// Returns an error when the bearer token cannot be represented as a header.
+pub fn vercel_headers(credentials: &Credentials) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        header_value(&format!("Bearer {}", credentials.access_token))?,
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("rotom"));
+    headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    Ok(headers)
+}
+
 /// Builds HTTP headers for authenticated xAI TTS generation requests.
 ///
 /// # Errors
@@ -381,6 +467,23 @@ fn remove_codex_unsupported_keys(body: &mut Value) {
         object.remove("stop");
         normalize_codex_service_tier(object);
     }
+}
+
+/// Removes rotom's explicit routing prefix before forwarding a model id to Vercel.
+fn strip_vercel_model_prefix(body: &mut Value) {
+    let Some(object) = body.as_object_mut() else {
+        return;
+    };
+    let Some(model) = object.get("model").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(stripped) = model
+        .strip_prefix("vercel/")
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    object.insert("model".to_owned(), Value::String(stripped.to_owned()));
 }
 
 fn normalize_codex_service_tier(object: &mut serde_json::Map<String, Value>) {
@@ -606,6 +709,69 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert!(body.get("service_tier").is_none());
         assert_eq!(headers["authorization"], "Bearer token");
+    }
+
+    #[test]
+    fn vercel_adapter_targets_ai_gateway_responses_api() {
+        let adapter = adapter_for_provider(Provider::Vercel);
+        let mut body = json!({
+            "model": "vercel/openai/gpt-6-astra",
+            "input": "hello",
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "max_output_tokens": 128
+        });
+        let credentials = Credentials {
+            provider: Provider::Vercel,
+            access_token: "token".into(),
+            refresh_token: String::new(),
+            expires_at: 1,
+            account_id: String::new(),
+        };
+
+        adapter.prepare_request(&mut body);
+        let headers = adapter.headers(&credentials).unwrap();
+
+        assert_eq!(adapter.provider(), Provider::Vercel);
+        assert_eq!(
+            adapter.default_base_url(),
+            DEFAULT_VERCEL_AI_GATEWAY_BASE_URL
+        );
+        assert_eq!(
+            adapter.responses_url("https://ai-gateway.vercel.sh/v1"),
+            "https://ai-gateway.vercel.sh/v1/responses"
+        );
+        assert_eq!(
+            adapter.responses_url("https://ai-gateway.vercel.sh/v1/responses"),
+            "https://ai-gateway.vercel.sh/v1/responses"
+        );
+        assert_eq!(
+            resolve_vercel_models_url("https://ai-gateway.vercel.sh/v1"),
+            "https://ai-gateway.vercel.sh/v1/models"
+        );
+        assert_eq!(
+            resolve_vercel_models_url("https://ai-gateway.vercel.sh/v1/models"),
+            "https://ai-gateway.vercel.sh/v1/models"
+        );
+        assert_eq!(
+            adapter.resource_capabilities(),
+            ResponseResourceCapabilities {
+                retrieve: ResponseResourceCapability::LocalCompat,
+                delete: ResponseResourceCapability::LocalCompat,
+                cancel: ResponseResourceCapability::Unsupported,
+                list_input_items: ResponseResourceCapability::LocalCompat,
+            }
+        );
+        assert_eq!(
+            adapter.response_creation_strategy(),
+            ResponseCreationStrategy::NativeResponses
+        );
+        assert_eq!(body["model"], "openai/gpt-6-astra");
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["top_p"], 0.8);
+        assert_eq!(body["max_output_tokens"], 128);
+        assert_eq!(headers["authorization"], "Bearer token");
+        assert_eq!(headers["content-type"], "application/json");
     }
 
     #[test]

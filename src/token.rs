@@ -34,6 +34,9 @@ impl TokenManager {
             Provider::Codex => OAuthClient::Codex(CodexOAuthClient::new(http)),
             Provider::Grok => OAuthClient::Grok(GrokOAuthClient::new(http)),
             Provider::Kiro => OAuthClient::Kiro(KiroOAuthClient::new(http)),
+            Provider::Vercel => OAuthClient::StaticBearer {
+                provider: Provider::Vercel,
+            },
         };
         Self::new_with_oauth(store, oauth)
     }
@@ -116,11 +119,14 @@ impl TokenManager {
     }
 
     async fn refresh_credentials(&self, credentials: &Credentials) -> Result<Credentials> {
+        if self.oauth.uses_static_bearer_token() {
+            return Ok(credentials.clone());
+        }
         self.oauth.refresh_token(&credentials.refresh_token).await
     }
 }
 
-/// Provider-specific OAuth refresh client used by [`TokenManager`].
+/// Provider-specific refresh client used by [`TokenManager`].
 #[derive(Clone)]
 pub enum OAuthClient {
     /// `OpenAI` Codex OAuth refresh client.
@@ -129,6 +135,11 @@ pub enum OAuthClient {
     Grok(GrokOAuthClient),
     /// Kiro imported credential refresh client.
     Kiro(KiroOAuthClient),
+    /// Static bearer token provider that does not expose refresh semantics.
+    StaticBearer {
+        /// Provider that accepts the static bearer token.
+        provider: Provider,
+    },
 }
 
 impl OAuthClient {
@@ -137,7 +148,13 @@ impl OAuthClient {
             Self::Codex(_) => Provider::Codex,
             Self::Grok(_) => Provider::Grok,
             Self::Kiro(_) => Provider::Kiro,
+            Self::StaticBearer { provider } => *provider,
         }
+    }
+
+    /// Returns whether this refresh client represents a non-refreshable bearer token.
+    const fn uses_static_bearer_token(&self) -> bool {
+        matches!(self, Self::StaticBearer { .. })
     }
 
     async fn refresh_token(&self, refresh_token: &str) -> Result<Credentials> {
@@ -145,6 +162,10 @@ impl OAuthClient {
             Self::Codex(client) => client.refresh_token(refresh_token).await,
             Self::Grok(client) => client.refresh_token(refresh_token).await,
             Self::Kiro(client) => client.refresh_token(refresh_token).await,
+            Self::StaticBearer { provider } => Err(Error::config(format!(
+                "{} credentials do not support token refresh",
+                provider.display_name()
+            ))),
         }
     }
 }
@@ -264,5 +285,34 @@ mod tests {
         assert_eq!(credentials.refresh_token, "new_refresh");
         assert_eq!(credentials.account_id, "acc_refreshed");
         assert_eq!(manager.credentials_snapshot().await, Some(credentials));
+    }
+
+    #[tokio::test]
+    async fn manager_refresh_preserves_static_bearer_credentials() {
+        let dir = TempDir::new().unwrap();
+        let store = AuthStore::new(dir.path().join("auth.json"));
+        let credentials = Credentials {
+            provider: crate::config::Provider::Vercel,
+            access_token: "api-key".into(),
+            refresh_token: String::new(),
+            expires_at: now_unix() + 600,
+            account_id: String::new(),
+        };
+        store.save(&credentials).unwrap();
+        let manager = TokenManager::new_for_provider(
+            store.clone(),
+            crate::config::Provider::Vercel,
+            Client::new(),
+        );
+
+        let refreshed = manager.refresh().await.unwrap();
+
+        assert_eq!(refreshed, credentials);
+        assert_eq!(
+            store
+                .load_provider(crate::config::Provider::Vercel)
+                .unwrap(),
+            Some(credentials)
+        );
     }
 }

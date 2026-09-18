@@ -1,16 +1,16 @@
 # Legal Notes
 
 rotom is an unofficial compatibility gateway. It is not affiliated with,
-endorsed by, or supported by OpenAI, Anthropic, or xAI.
+endorsed by, or supported by OpenAI, Anthropic, xAI, Kiro, or Vercel.
 
 This file is not legal advice. It is a practical summary of the main risk areas
 users should think about before deploying or distributing rotom.
 
 rotom is licensed under LGPLv3. That license permits commercial use of the
 software itself. The main legal risk discussed here is different: whether your
-upstream OpenAI/Codex or xAI/Grok account, deployment model, branding, and data
-handling comply with the separate terms and policies that govern the services
-you are connecting to.
+upstream OpenAI/Codex, xAI/Grok, Kiro, Vercel, or other routed provider
+account, deployment model, branding, and data handling comply with the separate
+terms and policies that govern the services you are connecting to.
 
 ## Intended Scope
 
@@ -23,7 +23,7 @@ That is materially different from:
 - offering a shared internal proxy for a team
 - exposing the gateway to customers or the public internet
 - reselling or sublicensing access backed by one person's account
-- presenting the gateway as an official OpenAI, Anthropic, or xAI integration
+- presenting the gateway as an official OpenAI, Anthropic, xAI, Kiro, or Vercel integration
 
 If your use case falls into one of those categories, legal review is prudent.
 
@@ -47,10 +47,10 @@ Questions to ask:
 
 ### 2. Branding and implied affiliation
 
-rotom refers to OpenAI, Anthropic, xAI, Claude Code, ChatGPT, Codex, and Grok
-for compatibility and integration purposes. That does not create permission to
-use their logos, brand assets, or product identity in a way that implies
-approval or partnership.
+rotom refers to OpenAI, Anthropic, xAI, Kiro, Vercel, Claude Code, ChatGPT,
+Codex, and Grok for compatibility and integration purposes. That does not
+create permission to use their logos, brand assets, or product identity in a
+way that implies approval or partnership.
 
 Practical rules:
 
@@ -88,7 +88,7 @@ You should evaluate:
 
 - Keep deployments local or single-user by default.
 - Require an explicit local API key if you expose the gateway on a network.
-- Do not market the project as an official OpenAI, Anthropic, or xAI product.
+- Do not market the project as an official OpenAI, Anthropic, xAI, Kiro, or Vercel product.
 - Do not reuse official logos or brand artwork without permission.
 - Prefer official commercial API access for multi-user or revenue-generating use cases.
 - Get legal review before team-wide, customer-facing, or hosted-service deployment.
@@ -110,3 +110,5 @@ If you maintain or distribute rotom, it is prudent to:
 - OpenAI Brand Guidelines: <https://openai.com/brand/>
 - Anthropic API information hub: <https://docs.anthropic.com/>
 - Anthropic legal and policy pages: <https://www.anthropic.com/legal>
+- Vercel AI Gateway documentation: <https://vercel.com/docs/ai-gateway>
+- Vercel legal pages: <https://vercel.com/legal>

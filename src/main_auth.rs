@@ -20,7 +20,7 @@ fn resolve_login_provider(
 
 fn prompt_login_provider(store: &AuthStore) -> Result<Provider> {
     let credentials = store.load_all()?;
-    println!("Select OAuth provider:");
+    println!("Select provider:");
     for (index, provider) in LOGIN_PROVIDERS.iter().enumerate() {
         println!(
             "[{}] {}",
@@ -36,13 +36,19 @@ fn prompt_login_provider(store: &AuthStore) -> Result<Provider> {
     parse_login_provider_choice(input.trim())
 }
 
-const LOGIN_PROVIDERS: [Provider; 3] = [Provider::Codex, Provider::Grok, Provider::Kiro];
+const LOGIN_PROVIDERS: [Provider; 4] = [
+    Provider::Codex,
+    Provider::Grok,
+    Provider::Kiro,
+    Provider::Vercel,
+];
 
 fn parse_login_provider_choice(value: &str) -> Result<Provider> {
     match value {
         "" | "1" => Ok(Provider::Codex),
         "2" => Ok(Provider::Grok),
         "3" => Ok(Provider::Kiro),
+        "4" => Ok(Provider::Vercel),
         other => other.parse(),
     }
 }
@@ -63,10 +69,14 @@ const fn login_provider_label(provider: Provider) -> &'static str {
         Provider::Codex => "openai",
         Provider::Grok => "grok",
         Provider::Kiro => "kiro",
+        Provider::Vercel => "vercel",
     }
 }
 
 fn login_provider_status(credentials: &Credentials) -> String {
+    if credentials.provider.uses_static_bearer_token() {
+        return "saved API key".to_owned();
+    }
     let remaining_secs = credentials.expires_at.saturating_sub(now_unix());
     if remaining_secs == 0 {
         "logged in, expired".to_owned()
@@ -107,7 +117,7 @@ fn reset_config(store: &AppConfigStore) -> Result<()> {
     Ok(())
 }
 
-/// Runs the interactive OAuth login flow and persists the resulting credentials.
+/// Runs the interactive provider login flow and persists the resulting credentials.
 async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result<()> {
     let http = Client::new();
     let existing_providers = store
@@ -120,6 +130,9 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
     if provider == Provider::Kiro {
         return login_kiro(store, http, show_daemon_restart_hint).await;
     }
+    if provider == Provider::Vercel {
+        return login_vercel(&store, show_daemon_restart_hint);
+    }
     let flow = match provider {
         Provider::Codex => create_authorization_flow(originator)?,
         Provider::Grok => {
@@ -128,6 +141,7 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
                 .await?
         }
         Provider::Kiro => unreachable!("Kiro login is handled before generic OAuth flow"),
+        Provider::Vercel => unreachable!("Vercel login is handled before generic OAuth flow"),
     };
     println!(
         "Open this URL to authenticate with {}:\n{}\n",
@@ -151,6 +165,7 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
                 .await?
         }
         Provider::Kiro => unreachable!("Kiro login is handled before generic OAuth flow"),
+        Provider::Vercel => unreachable!("Vercel login is handled before generic OAuth flow"),
     };
     store.save(&credentials)?;
     let subject = credential_subject(&credentials);
@@ -160,6 +175,22 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
     );
     if show_daemon_restart_hint {
         println!("{}", new_provider_daemon_restart_hint(provider));
+    }
+    Ok(())
+}
+
+/// Saves a Vercel AI Gateway API key as static bearer credentials.
+fn login_vercel(store: &AuthStore, show_daemon_restart_hint: bool) -> Result<()> {
+    let api_key = prompt_vercel_api_key()?;
+    let credentials = vercel_credentials(api_key);
+    store.save(&credentials)?;
+    println!(
+        "saved {} to {}",
+        credential_subject(&credentials),
+        store.path().display()
+    );
+    if show_daemon_restart_hint {
+        println!("{}", new_provider_daemon_restart_hint(Provider::Vercel));
     }
     Ok(())
 }
@@ -188,6 +219,43 @@ async fn login_kiro(store: AuthStore, http: Client, show_daemon_restart_hint: bo
         println!("{}", new_provider_daemon_restart_hint(Provider::Kiro));
     }
     Ok(())
+}
+
+/// Prompts for a Vercel AI Gateway key, falling back to `AI_GATEWAY_API_KEY`.
+fn prompt_vercel_api_key() -> Result<String> {
+    let env_key = std::env::var("AI_GATEWAY_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let prompt = if env_key.is_some() {
+        "Vercel AI Gateway API key [AI_GATEWAY_API_KEY]: "
+    } else {
+        "Vercel AI Gateway API key: "
+    };
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let key = input.trim();
+    if !key.is_empty() {
+        return Ok(key.to_owned());
+    }
+    env_key.ok_or_else(|| {
+        Error::config(
+            "Vercel AI Gateway API key is required; create one with `vercel ai-gateway api-keys create` or set AI_GATEWAY_API_KEY",
+        )
+    })
+}
+
+/// Builds non-refreshable Vercel credentials from an AI Gateway API key.
+const fn vercel_credentials(api_key: String) -> Credentials {
+    Credentials {
+        provider: Provider::Vercel,
+        access_token: api_key,
+        refresh_token: String::new(),
+        expires_at: STATIC_BEARER_TOKEN_EXPIRY_UNIX,
+        account_id: String::new(),
+    }
 }
 
 fn prompt_kiro_authorization_callback(expected_state: &str) -> Result<KiroAuthorizationCallback> {
@@ -275,6 +343,7 @@ async fn refresh_credentials(credentials: &Credentials) -> Result<Credentials> {
                 .refresh_token(&credentials.refresh_token)
                 .await
         }
+        Provider::Vercel => Ok(credentials.clone()),
     }
 }
 

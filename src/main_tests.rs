@@ -6,6 +6,7 @@ use super::{
     format_login_provider_choice, format_models, new_provider_daemon_restart_hint,
     parse_bind_hosts, parse_login_provider_choice, resolve_model_fallback,
     resolve_served_providers, resolve_status_providers, rotom_version_line, token_expiry_message,
+    vercel_credentials,
 };
 use clap::Parser;
 use rotom::config::{AuthStore, Credentials, Provider, now_unix};
@@ -230,10 +231,14 @@ fn served_provider_uses_saved_providers_without_selection() {
     let auth = TestAuthStore::new();
     save_provider_credentials(&auth.store, Provider::Kiro);
     save_provider_credentials(&auth.store, Provider::Codex);
+    save_provider_credentials(&auth.store, Provider::Vercel);
 
     let providers = resolve_served_providers(&auth.store, None, None).unwrap();
 
-    assert_eq!(providers, [Provider::Codex, Provider::Kiro]);
+    assert_eq!(
+        providers,
+        [Provider::Codex, Provider::Kiro, Provider::Vercel]
+    );
 }
 
 fn save_provider_credentials(store: &AuthStore, provider: Provider) {
@@ -250,12 +255,14 @@ fn save_provider_credentials(store: &AuthStore, provider: Provider) {
 
 #[test]
 fn formats_models_grouped_by_provider() {
-    let output = format_models(&[Provider::Codex, Provider::Grok]);
+    let output = format_models(&[Provider::Codex, Provider::Grok, Provider::Vercel]);
 
     assert!(output.contains("OpenAI (codex)\n  gpt-5.1"));
     assert!(output.contains("  gpt-6-astra\n"));
     assert!(output.contains("  gpt-5.6-sol\n"));
     assert!(output.contains("Grok (grok)\n  grok-4.6"));
+    assert!(output.contains("Vercel AI Gateway (vercel)\n  openai/gpt-6-astra"));
+    assert!(output.contains("  typesafe-ai/jev\n"));
     assert!(!output.contains("Kiro (kiro)"));
     assert!(output.contains("\n\nGrok (grok)"));
 }
@@ -279,6 +286,16 @@ fn formats_kiro_models() {
 }
 
 #[test]
+fn formats_vercel_models() {
+    let output = format_models(&[Provider::Vercel]);
+
+    assert!(output.starts_with("Vercel AI Gateway (vercel)\n"));
+    assert!(output.contains("  openai/gpt-6-astra\n"));
+    assert!(output.contains("  anthropic/claude-sonnet-5\n"));
+    assert!(output.contains("  typesafe-ai/jev\n"));
+}
+
+#[test]
 fn formats_status_version_line() {
     assert_eq!(
         rotom_version_line(),
@@ -292,13 +309,18 @@ fn parses_login_provider_choices() {
     assert_eq!(parse_login_provider_choice("1").unwrap(), Provider::Codex);
     assert_eq!(parse_login_provider_choice("2").unwrap(), Provider::Grok);
     assert_eq!(parse_login_provider_choice("3").unwrap(), Provider::Kiro);
+    assert_eq!(parse_login_provider_choice("4").unwrap(), Provider::Vercel);
     assert_eq!(
         parse_login_provider_choice("openai").unwrap(),
         Provider::Codex
     );
     assert_eq!(parse_login_provider_choice("grok").unwrap(), Provider::Grok);
     assert_eq!(parse_login_provider_choice("kiro").unwrap(), Provider::Kiro);
-    assert!(parse_login_provider_choice("4").is_err());
+    assert_eq!(
+        parse_login_provider_choice("vercel").unwrap(),
+        Provider::Vercel
+    );
+    assert!(parse_login_provider_choice("5").is_err());
     assert!(parse_login_provider_choice("cursor").is_err());
 }
 
@@ -336,10 +358,12 @@ fn formats_login_provider_choice_with_status() {
     let openai = format_login_provider_choice(Provider::Codex, &credentials);
     let grok = format_login_provider_choice(Provider::Grok, &credentials);
     let kiro = format_login_provider_choice(Provider::Kiro, &credentials);
+    let vercel = format_login_provider_choice(Provider::Vercel, &credentials);
 
     assert!(openai.starts_with("openai (logged in, expires in "));
     assert_eq!(grok, "grok");
     assert_eq!(kiro, "kiro");
+    assert_eq!(vercel, "vercel");
 }
 
 #[test]
@@ -356,6 +380,19 @@ fn credential_subject_does_not_include_account_id() {
     let token_message = token_expiry_message(&credentials);
     assert!(token_message.contains("(Codex credentials)"));
     assert!(!token_message.contains("account-secret"));
+}
+
+#[test]
+fn vercel_credentials_store_static_api_key_without_expiry_message() {
+    let credentials = vercel_credentials("gateway-key".into());
+
+    assert_eq!(credentials.provider, Provider::Vercel);
+    assert_eq!(credentials.access_token, "gateway-key");
+    assert!(credentials.refresh_token.is_empty());
+    assert_eq!(
+        token_expiry_message(&credentials),
+        "token does not expire automatically (Vercel credentials)"
+    );
 }
 
 #[test]
@@ -376,12 +413,22 @@ fn resolves_all_saved_status_providers_by_default() {
                 expires_at: now_unix() + 90,
                 account_id: "account".into(),
             },
+            Credentials {
+                provider: Provider::Vercel,
+                access_token: "access".into(),
+                refresh_token: String::new(),
+                expires_at: now_unix() + 90,
+                account_id: String::new(),
+            },
         ],
         None,
     )
     .unwrap();
 
-    assert_eq!(providers, [Provider::Codex, Provider::Grok]);
+    assert_eq!(
+        providers,
+        [Provider::Codex, Provider::Grok, Provider::Vercel]
+    );
 }
 
 #[test]

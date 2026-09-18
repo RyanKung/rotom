@@ -19,18 +19,20 @@ use rotom::{
     logging::{self, LogLevel},
     models::{
         highlight_model_ids_for_provider, resolve_model_ids_for_provider,
-        resolve_model_list_for_providers,
+        resolve_model_list_for_provider,
     },
     oauth::{
         CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
         create_authorization_flow, default_cli_database_path, default_desktop_token_path,
         parse_kiro_authorization_callback,
     },
+    openai::response::ModelList,
     server::{AppState, UpstreamState, serve_all},
     timefmt::format_duration,
     token::TokenManager,
 };
 use std::{
+    collections::HashSet,
     io::{self, IsTerminal, Write},
     net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -48,18 +50,21 @@ use prompt::{
 const INTERACTIVE_TOKEN_STATUS_INTERVAL: Duration = Duration::from_secs(1);
 const LOG_TOKEN_STATUS_INTERVAL: Duration = Duration::from_secs(60);
 const DEFAULT_MODEL_FALLBACK: &str = "gpt-5.5";
+/// Far-future Unix timestamp used for static API-key credentials.
+const STATIC_BEARER_TOKEN_EXPIRY_UNIX: i64 = 4_102_444_800;
 const CLI_LONG_ABOUT: &str = "\
 rotom is a local OpenAI- and Anthropic-compatible API gateway backed by Codex,
-Grok, or Kiro OAuth.
+Grok, Kiro, or Vercel AI Gateway credentials.
 
 It helps clients that speak either the OpenAI Chat Completions API or the
-Anthropic Messages API call the selected upstream after you complete the OAuth
-login flow. Credentials are stored locally and can be refreshed automatically
-during requests or manually with the refresh command/API.";
+Anthropic Messages API call the selected upstream after you save provider
+credentials. Refreshable credentials are renewed automatically during requests
+or manually with the refresh command/API.";
 const CLI_AFTER_LONG_HELP: &str = "\
 Examples:
   rotom login
   rotom login --provider grok
+  rotom login --provider vercel
   rotom login --kiro
   rotom config
   rotom config show
@@ -81,17 +86,18 @@ Examples:
 
 Environment:
   ROTOM_API_KEY          Optional local API key for server endpoints
-  ROTOM_PROVIDER         Upstream provider: codex, grok, or kiro
+  ROTOM_PROVIDER         Upstream provider: codex, grok, kiro, or vercel
   ROTOM_MODEL_FALLBACK   Fallback for unsupported Anthropic model ids
   ROTOM_AUTH_FILE        Override the credential file path
   ROTOM_HOME             Override the default config home
+  AI_GATEWAY_API_KEY     Default key when logging in to Vercel AI Gateway
 Files:
   Credentials default to ~/.rotom/auth.json.
   Runtime config defaults to ~/.rotom/config.json.
 
 Disclaimer:
   rotom is an unofficial tool and is not affiliated with, endorsed by, or
-  supported by OpenAI, Anthropic, xAI, AWS, or Kiro. Use it at your own
+  supported by OpenAI, Anthropic, xAI, AWS, Kiro, or Vercel. Use it at your own
   risk, make sure your usage complies with the terms that apply to your account
   and the upstream services, and do not assume the LGPLv3 license overrides
   upstream account restrictions on sharing or reselling personal OAuth-backed
@@ -106,7 +112,7 @@ Copyright:
 #[command(
     name = "rotom",
     version,
-    about = "OpenAI- and Anthropic-compatible API gateway backed by OAuth providers",
+    about = "OpenAI- and Anthropic-compatible API gateway backed by provider credentials",
     long_about = CLI_LONG_ABOUT,
     after_long_help = CLI_AFTER_LONG_HELP
 )]
@@ -127,8 +133,8 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     #[command(
-        about = "Log in with an OAuth provider and save local credentials",
-        long_about = "Start the selected OAuth login flow, exchange the authorization code for tokens, and save credentials to the configured auth file."
+        about = "Log in with a provider and save local credentials",
+        long_about = "Start the selected provider login flow and save credentials to the configured auth file. OAuth providers exchange an authorization code; Vercel stores an AI Gateway API key."
     )]
     Login {
         #[arg(long, value_name = "PATH", help = "Credential file to read/write")]
@@ -137,7 +143,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "OAuth provider to authenticate: codex, grok, or kiro"
+            help = "Provider to authenticate: codex, grok, kiro, or vercel"
         )]
         provider: Option<String>,
         #[arg(
@@ -187,7 +193,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "Upstream provider to serve: codex, grok, or kiro"
+            help = "Upstream provider to serve: codex, grok, kiro, or vercel"
         )]
         provider: Option<String>,
         #[arg(
@@ -199,8 +205,8 @@ enum Command {
         model_fallback: Option<String>,
     },
     #[command(
-        about = "Force refresh saved OAuth tokens",
-        long_about = "Use saved refresh tokens to fetch fresh credentials immediately and write them back to the configured auth file."
+        about = "Refresh saved provider credentials",
+        long_about = "Use saved refresh tokens to fetch fresh credentials immediately and write them back to the configured auth file. Static API-key providers are reported without network refresh."
     )]
     Refresh {
         #[arg(long, value_name = "PATH", help = "Credential file to read/write")]
@@ -209,7 +215,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "OAuth provider to refresh: codex, grok, or kiro. When omitted, refreshes all saved providers."
+            help = "Provider to refresh: codex, grok, kiro, or vercel. When omitted, refreshes all saved providers."
         )]
         provider: Option<String>,
     },
@@ -223,7 +229,7 @@ enum Command {
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to inspect: codex/openai, grok/xai, or kiro"
+            help = "Provider to inspect: codex/openai, grok/xai, kiro, or vercel"
         )]
         provider: Option<String>,
     },
@@ -235,7 +241,7 @@ enum Command {
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to list: codex/openai, grok/xai, or kiro"
+            help = "Provider to list: codex/openai, grok/xai, kiro, or vercel"
         )]
         provider: Option<String>,
     },
@@ -377,7 +383,7 @@ struct DaemonInstallCliOptions {
         long,
         env = "ROTOM_PROVIDER",
         value_name = "PROVIDER",
-        help = "Upstream provider to serve: codex, grok, or kiro"
+        help = "Upstream provider to serve: codex, grok, kiro, or vercel"
     )]
     provider: Option<String>,
     #[arg(
@@ -443,7 +449,7 @@ async fn run(cli: Cli) -> Result<()> {
                     client: CodexClient::new_for_provider(http.clone(), *provider),
                 });
             }
-            let model_list = resolve_model_list_for_providers(&providers)?;
+            let model_list = resolve_model_list_for_upstreams(&upstreams).await?;
             println!("listening on {}", format_bind_urls(&effective_bind));
             for upstream in &upstreams {
                 spawn_token_expiry_display(upstream.token_manager.clone());
@@ -472,6 +478,45 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),
     }
+}
+
+async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result<ModelList> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+
+    for upstream in upstreams {
+        let models = if upstream.provider == Provider::Vercel {
+            match upstream.token_manager.credentials().await {
+                Ok(credentials) => match upstream.client.list_vercel_models(&credentials).await {
+                    Ok(models) => models,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "falling back to built-in Vercel AI Gateway model list"
+                        );
+                        resolve_model_list_for_provider(upstream.provider)?
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "falling back to built-in Vercel AI Gateway model list"
+                    );
+                    resolve_model_list_for_provider(upstream.provider)?
+                }
+            }
+        } else {
+            resolve_model_list_for_provider(upstream.provider)?
+        };
+
+        for model in models.data {
+            if seen.insert(model.id.clone()) {
+                ids.push((model.id, model.owned_by));
+            }
+        }
+    }
+
+    Ok(ModelList::from_id_owners(ids))
 }
 
 /// Reinstalls rotom from crates.io through Cargo.
@@ -936,8 +981,11 @@ async fn token_expiry_status(token_manager: &TokenManager) -> String {
 
 /// Renders a human-readable expiry message for one credential set.
 fn token_expiry_message(credentials: &Credentials) -> String {
-    let remaining_secs = credentials.expires_at.saturating_sub(now_unix());
     let subject = credential_subject(credentials);
+    if credentials.provider.uses_static_bearer_token() {
+        return format!("token does not expire automatically ({subject})");
+    }
+    let remaining_secs = credentials.expires_at.saturating_sub(now_unix());
     if remaining_secs == 0 {
         format!("token expired ({subject})")
     } else {

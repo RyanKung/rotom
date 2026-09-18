@@ -40,6 +40,14 @@ pub const KIRO_MODELS: &[&str] = &[
     "qwen3-coder-next",
 ];
 
+/// Default Vercel AI Gateway model identifiers exposed by the project.
+pub const VERCEL_MODELS: &[&str] = &[
+    "openai/gpt-6-astra",
+    "anthropic/claude-sonnet-5",
+    "anthropic/claude-opus-5",
+    "typesafe-ai/jev",
+];
+
 const HIGHLIGHT_MODEL_LIMIT: usize = 4;
 
 /// Resolves the default model identifiers into a trimmed, de-duplicated list.
@@ -55,6 +63,7 @@ pub fn resolve_model_ids_for_provider(provider: Provider) -> Vec<String> {
         Provider::Codex => OPENCLAW_CODEX_MODELS,
         Provider::Grok => GROK_MODELS,
         Provider::Kiro => KIRO_MODELS,
+        Provider::Vercel => VERCEL_MODELS,
     };
     normalize_model_ids(ids.iter().map(ToString::to_string))
 }
@@ -128,6 +137,9 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
     if removed_cursor_model(normalized) {
         return None;
     }
+    if is_explicit_vercel_model(normalized) || is_gateway_model(normalized) {
+        return Some(Provider::Vercel);
+    }
     let normalized = normalized
         .strip_prefix("xai/")
         .or_else(|| normalized.strip_prefix("grok/"))
@@ -150,6 +162,26 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
 
 fn removed_cursor_model(model: &str) -> bool {
     model.starts_with("cursor/") || model.starts_with("sonnet-") || model == "opus"
+}
+
+/// Returns whether a model id uses rotom's explicit Vercel routing prefix.
+fn is_explicit_vercel_model(model: &str) -> bool {
+    model
+        .strip_prefix("vercel/")
+        .is_some_and(|stripped| !stripped.is_empty())
+}
+
+/// Returns whether a model id uses Vercel AI Gateway's provider/model namespace shape.
+fn is_gateway_model(model: &str) -> bool {
+    let Some((namespace, name)) = model.split_once('/') else {
+        return false;
+    };
+    !namespace.is_empty()
+        && !name.is_empty()
+        && !matches!(
+            namespace,
+            "cursor" | "grok" | "kiro" | "openai-codex" | "xai"
+        )
 }
 
 /// Builds a [`ModelList`] containing all models for the supplied providers.
@@ -179,6 +211,7 @@ const fn model_owner(provider: Provider) -> &'static str {
         Provider::Codex => "openai-codex",
         Provider::Grok => "xai",
         Provider::Kiro => "kiro",
+        Provider::Vercel => "vercel-ai-gateway",
     }
 }
 
@@ -197,6 +230,7 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
         .or_else(|| id.strip_prefix("xai/"))
         .or_else(|| id.strip_prefix("grok/"))
         .or_else(|| id.strip_prefix("kiro/"))
+        .or_else(|| id.strip_prefix("vercel/"))
         .unwrap_or(id);
 
     if is_lightweight_highlight_variant(normalized) {
@@ -214,6 +248,7 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
             }
         }
         Provider::Kiro => kiro_family_rank(normalized)?,
+        Provider::Vercel => vercel_family_rank(normalized)?,
     };
     let effort = effort_rank(normalized);
 
@@ -306,6 +341,12 @@ fn kiro_family_rank(id: &str) -> Option<u16> {
     }
 }
 
+/// Scores a Vercel model by applying the family rank to the model segment.
+fn vercel_family_rank(id: &str) -> Option<u16> {
+    let model = id.split_once('/').map_or(id, |(_, model)| model);
+    codex_family_rank(model).or_else(|| kiro_family_rank(model))
+}
+
 fn effort_rank(id: &str) -> u16 {
     let mut rank: u16 = 10;
     if id.contains("medium") {
@@ -339,7 +380,7 @@ fn highlight_score(provider: Provider, major: u16, minor: u16, family: u16, effo
             10_000_000 + version_score + u32::from(family) * 10 + u32::from(effort)
         }
         Provider::Kiro => u32::from(family) * 1_000 + u32::from(major) * 10 + u32::from(minor),
-        Provider::Codex | Provider::Grok => {
+        Provider::Codex | Provider::Grok | Provider::Vercel => {
             version_score + u32::from(family) * 10 + u32::from(effort)
         }
     }
@@ -423,6 +464,21 @@ mod tests {
     }
 
     #[test]
+    fn vercel_defaults_include_ai_gateway_models() {
+        let ids = resolve_model_ids_for_provider(Provider::Vercel);
+
+        assert_eq!(
+            ids,
+            vec![
+                "openai/gpt-6-astra".to_owned(),
+                "anthropic/claude-sonnet-5".to_owned(),
+                "anthropic/claude-opus-5".to_owned(),
+                "typesafe-ai/jev".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn highlights_codex_models_by_version_and_filters_light_variants() {
         let ids = resolve_model_ids_for_provider(Provider::Codex);
 
@@ -459,6 +515,20 @@ mod tests {
                 "claude-opus-4.8".to_owned(),
                 "claude-opus-4.7".to_owned(),
                 "claude-opus-4.6".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn highlights_vercel_gateway_models_by_underlying_family() {
+        let ids = resolve_model_ids_for_provider(Provider::Vercel);
+
+        assert_eq!(
+            highlight_model_ids_for_provider(Provider::Vercel, &ids),
+            vec![
+                "openai/gpt-6-astra".to_owned(),
+                "anthropic/claude-opus-5".to_owned(),
+                "anthropic/claude-sonnet-5".to_owned(),
             ]
         );
     }
@@ -506,6 +576,27 @@ mod tests {
     }
 
     #[test]
+    fn provider_detection_handles_vercel_gateway_models() {
+        assert_eq!(
+            provider_for_model("openai/gpt-6-astra"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(
+            provider_for_model("anthropic/claude-sonnet-5"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(
+            provider_for_model("typesafe-ai/jev"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(
+            provider_for_model("vercel/xai/grok-4.6"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(provider_for_model("xai/grok-4.6"), Some(Provider::Grok));
+    }
+
+    #[test]
     fn removed_cursor_models_do_not_route_to_another_provider() {
         assert_eq!(provider_for_model("cursor/gpt-5"), None);
         assert_eq!(provider_for_model("sonnet-4"), None);
@@ -529,5 +620,7 @@ mod tests {
         assert_eq!(owner_for("gpt-6-astra"), Some("openai-codex"));
         assert_eq!(owner_for("grok-4.6"), Some("xai"));
         assert_eq!(owner_for("auto"), Some("kiro"));
+        let models = resolve_model_list_for_provider(Provider::Vercel).unwrap();
+        assert_eq!(models.data[0].owned_by, "vercel-ai-gateway");
     }
 }
