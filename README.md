@@ -259,7 +259,10 @@ These upstreams are not all plain model APIs, so rotom adapts requests and
 quietly drops controls the upstream cannot honor.
 
 - **Codex**: accepts `temperature` / `max_tokens` and similar fields but does
-  not forward them (Codex rejects them upstream). `/v1/responses` keeps a local
+  not forward them (Codex rejects them upstream). Chat Completions
+  `response_format` (`json_schema`, `json_object`, `text`) is translated to the
+  Responses API `text.format`, so structured outputs work through
+  `/v1/chat/completions`. `/v1/responses` keeps a local
   replay behavior for existing clients.
 - **Grok**: uses xAI's native Responses API and forwards supported controls
   (`temperature`, `top_p`, `max_output_tokens`, `stop`, ...). Text to speech

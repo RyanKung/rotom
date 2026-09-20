@@ -31,7 +31,7 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
         "stream": true,
         "instructions": instructions,
         "input": input,
-        "text": { "verbosity": text_verbosity(request) },
+        "text": text_config(request),
         "include": ["reasoning.encrypted_content"],
         "tool_choice": convert_tool_choice(request.tool_choice.as_ref()).unwrap_or_else(|| json!("auto")),
         "parallel_tool_calls": request.parallel_tool_calls.unwrap_or(true)
@@ -380,6 +380,48 @@ fn text_verbosity(request: &ChatCompletionRequest) -> String {
         .to_owned()
 }
 
+/// Builds the Responses API `text` object: verbosity plus, when the chat
+/// request carries a `response_format`, the equivalent `text.format`.
+fn text_config(request: &ChatCompletionRequest) -> Value {
+    let mut text = json!({ "verbosity": text_verbosity(request) });
+    if let Some(format) = convert_response_format(request.extra.get("response_format")) {
+        text["format"] = format;
+    }
+    text
+}
+
+/// Maps a Chat Completions `response_format` to a Responses API `text.format`.
+///
+/// - `{"type": "json_schema", "json_schema": {name, schema, strict?, description?}}`
+///   becomes `{"type": "json_schema", name, schema, strict, description?}`.
+/// - `{"type": "json_object"}` and `{"type": "text"}` pass through unchanged.
+/// - Anything else is forwarded as-is so newer formats are not silently dropped.
+pub fn convert_response_format(response_format: Option<&Value>) -> Option<Value> {
+    let format = response_format?.as_object()?;
+    let kind = format.get("type").and_then(Value::as_str)?;
+    match kind {
+        "json_schema" => {
+            let spec = format.get("json_schema").and_then(Value::as_object);
+            let mut out = json!({ "type": "json_schema" });
+            if let Some(spec) = spec {
+                for key in ["name", "schema", "strict", "description"] {
+                    if let Some(value) = spec.get(key) {
+                        out[key] = value.clone();
+                    }
+                }
+            }
+            if out.get("name").is_none() {
+                out["name"] = Value::String("response".to_owned());
+            }
+            if out.get("strict").is_none() {
+                out["strict"] = Value::Bool(true);
+            }
+            Some(out)
+        }
+        _ => Some(Value::Object(format.clone())),
+    }
+}
+
 fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
     let id = normalize_model(model);
     if (id.starts_with("gpt-5.2")
@@ -501,6 +543,80 @@ mod tests {
         assert_eq!(body["instructions"], "be terse");
         assert!(body.get("temperature").is_none());
         assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    }
+
+    #[test]
+    fn omits_text_format_without_response_format() {
+        let body = to_codex_request(&request(json!({
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hello"}]
+        })))
+        .unwrap();
+
+        assert_eq!(body["text"]["verbosity"], "medium");
+        assert!(body["text"].get("format").is_none());
+    }
+
+    #[test]
+    fn maps_json_schema_response_format_to_text_format() {
+        let body = to_codex_request(&request(json!({
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "patch",
+                    "strict": true,
+                    "description": "a patch",
+                    "schema": {"type": "object", "properties": {"id": {"type": "string"}},
+                               "required": ["id"], "additionalProperties": false}
+                }
+            }
+        })))
+        .unwrap();
+
+        let format = &body["text"]["format"];
+        assert_eq!(format["type"], "json_schema");
+        assert_eq!(format["name"], "patch");
+        assert_eq!(format["strict"], true);
+        assert_eq!(format["description"], "a patch");
+        assert_eq!(format["schema"]["required"], json!(["id"]));
+        assert!(
+            format.get("json_schema").is_none(),
+            "chat wrapper key must not leak upstream"
+        );
+        assert_eq!(body["text"]["verbosity"], "medium");
+    }
+
+    #[test]
+    fn json_schema_response_format_defaults_name_and_strict() {
+        let format = convert_response_format(Some(&json!({
+            "type": "json_schema",
+            "json_schema": { "schema": {"type": "object"} }
+        })))
+        .unwrap();
+
+        assert_eq!(format["name"], "response");
+        assert_eq!(format["strict"], true);
+    }
+
+    #[test]
+    fn passes_json_object_response_format_through() {
+        let body = to_codex_request(&request(json!({
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "response_format": {"type": "json_object"}
+        })))
+        .unwrap();
+
+        assert_eq!(body["text"]["format"], json!({"type": "json_object"}));
+    }
+
+    #[test]
+    fn ignores_malformed_response_format() {
+        assert!(convert_response_format(Some(&json!("json_object"))).is_none());
+        assert!(convert_response_format(Some(&json!({"no_type": 1}))).is_none());
+        assert!(convert_response_format(None).is_none());
     }
 
     #[test]
