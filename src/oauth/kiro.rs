@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 use url::Url;
 
@@ -46,6 +47,108 @@ pub const KIRO_CLI_DATABASE_RELATIVE_PATH: &str = ".local/share/kiro-cli/data.sq
 /// macOS Kiro CLI `SQLite` credential store relative to the user's home directory.
 pub const KIRO_CLI_MACOS_DATABASE_RELATIVE_PATH: &str =
     "Library/Application Support/kiro-cli/data.sqlite3";
+
+/// Default Kiro CLI executable name invoked to list the live model catalog.
+const KIRO_CLI_DEFAULT_BINARY: &str = "kiro-cli";
+/// Environment variable overriding the Kiro CLI executable used for model listing.
+const KIRO_CLI_BINARY_ENV: &str = "ROTOM_KIRO_CLI_BIN";
+
+/// Single entry in the Kiro CLI `--list-models` JSON response.
+#[derive(Debug, Deserialize)]
+struct KiroCliModelEntry {
+    #[serde(rename = "model_id", alias = "modelId")]
+    model_id: String,
+}
+
+/// Top-level shape of the Kiro CLI `--list-models --format json` response.
+#[derive(Debug, Deserialize)]
+struct KiroCliModelList {
+    #[serde(default)]
+    models: Vec<KiroCliModelEntry>,
+}
+
+/// Returns the Kiro CLI executable to invoke, honoring [`KIRO_CLI_BINARY_ENV`].
+fn kiro_cli_binary() -> String {
+    env::var(KIRO_CLI_BINARY_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| KIRO_CLI_DEFAULT_BINARY.to_string())
+}
+
+/// Parses the model identifiers from a Kiro CLI `--list-models --format json` payload.
+///
+/// Empty, blank, and duplicate identifiers are dropped while preserving the
+/// order reported by the CLI.
+///
+/// # Errors
+///
+/// Returns an error when the payload is not valid JSON in the expected shape or
+/// contains no usable model identifiers.
+pub fn parse_cli_model_ids(payload: &str) -> Result<Vec<String>> {
+    let parsed: KiroCliModelList = serde_json::from_str(payload)
+        .map_err(|error| Error::config(format!("could not parse Kiro CLI model list: {error}")))?;
+
+    let mut seen = std::collections::HashSet::new();
+    let ids: Vec<String> = parsed
+        .models
+        .into_iter()
+        .map(|entry| entry.model_id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+
+    if ids.is_empty() {
+        return Err(Error::config(
+            "Kiro CLI model list did not contain any model ids",
+        ));
+    }
+
+    Ok(ids)
+}
+
+/// Fetches the live Kiro model catalog by invoking the Kiro CLI.
+///
+/// Runs `kiro-cli chat --list-models --format json` (binary overridable via
+/// `ROTOM_KIRO_CLI_BIN`) and returns the reported `model_id` values. This keeps
+/// rotom's advertised Kiro model list in lockstep with whatever the installed
+/// Kiro CLI exposes.
+///
+/// # Errors
+///
+/// Returns an error when the Kiro CLI cannot be launched, exits unsuccessfully,
+/// or emits output that cannot be parsed into at least one model id.
+pub fn cli_model_ids() -> Result<Vec<String>> {
+    let binary = kiro_cli_binary();
+    let output = Command::new(&binary)
+        .args(["chat", "--list-models", "--format", "json"])
+        .output()
+        .map_err(|error| {
+            Error::config(format!(
+                "could not run `{binary} chat --list-models` to fetch Kiro models: {error}"
+            ))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.trim();
+        let detail = if detail.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            detail.to_string()
+        };
+        return Err(Error::config(format!(
+            "`{binary} chat --list-models` failed: {detail}"
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|error| {
+        Error::config(format!(
+            "`{binary} chat --list-models` returned non-UTF-8 output: {error}"
+        ))
+    })?;
+
+    parse_cli_model_ids(&stdout)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]

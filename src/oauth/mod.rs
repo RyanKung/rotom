@@ -19,8 +19,10 @@ pub use callback::{CallbackOutcome, CallbackServer};
 pub use grok::{GrokOAuthClient, XAI_API_BASE_URL};
 pub use kiro::{
     KIRO_CLI_DATABASE_RELATIVE_PATH, KIRO_DESKTOP_TOKEN_RELATIVE_PATH, KiroAuthorizationCallback,
-    KiroOAuthClient, api_region_from_credentials, default_cli_database_path,
-    default_desktop_token_path, parse_kiro_authorization_callback, profile_arn_from_credentials,
+    KiroOAuthClient, api_region_from_credentials, cli_model_ids as kiro_cli_model_ids,
+    default_cli_database_path, default_desktop_token_path,
+    parse_cli_model_ids as parse_kiro_cli_model_ids, parse_kiro_authorization_callback,
+    profile_arn_from_credentials,
 };
 pub use pkce::{code_challenge, generate_pkce};
 
