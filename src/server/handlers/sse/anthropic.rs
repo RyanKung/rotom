@@ -102,6 +102,8 @@ struct AnthropicRawStreamState {
     open_tool_blocks: BTreeSet<u32>,
     open_thinking_blocks: BTreeSet<u32>,
     seen_tool_blocks: BTreeSet<u32>,
+    /// Exact argument bytes already sent for each tool block index.
+    emitted_tool_arguments: HashMap<u32, String>,
     seen_thinking_text_blocks: BTreeSet<u32>,
     tool_meta: HashMap<String, ToolMeta>,
     usage: ResponseUsage,
@@ -114,6 +116,7 @@ impl AnthropicRawStreamState {
             open_tool_blocks: BTreeSet::new(),
             open_thinking_blocks: BTreeSet::new(),
             seen_tool_blocks: BTreeSet::new(),
+            emitted_tool_arguments: HashMap::new(),
             seen_thinking_text_blocks: BTreeSet::new(),
             tool_meta: HashMap::new(),
             usage: ResponseUsage {
@@ -230,11 +233,18 @@ impl AnthropicRawStreamState {
     fn tool_arguments_delta_events(&mut self, item: &Value) -> Result<Vec<Event>> {
         let index = output_index(item);
         let mut events = self.open_tool_from_delta(item, index)?;
+        if !self.open_tool_blocks.contains(&index) {
+            return Ok(events);
+        }
         let delta = item
             .get("delta")
             .and_then(Value::as_str)
             .unwrap_or_default();
         if !delta.is_empty() {
+            self.emitted_tool_arguments
+                .entry(index)
+                .or_default()
+                .push_str(delta);
             self.add_output_tokens(delta);
             events.push(tool_json_delta(index, delta)?);
         }
@@ -264,11 +274,15 @@ impl AnthropicRawStreamState {
 
     fn tool_arguments_done_events(&mut self, item: &Value) -> Result<Vec<Event>> {
         let index = output_index(item);
-        if self.open_tool_blocks.remove(&index) {
-            Ok(vec![content_block_stop(index)?])
-        } else {
-            Ok(Vec::new())
+        let mut events = self.open_tool_from_delta(item, index)?;
+        if self.open_tool_blocks.contains(&index)
+            && let Some(arguments) = item.get("arguments").and_then(Value::as_str)
+        {
+            events.extend(self.missing_tool_arguments_events(index, arguments)?);
         }
+        // Keep the block open until output_item.done so its full arguments can
+        // still repair a missing or partial arguments.done payload.
+        Ok(events)
     }
 
     fn output_item_done_events(&mut self, item: &Value) -> Result<Vec<Event>> {
@@ -285,19 +299,38 @@ impl AnthropicRawStreamState {
         let index = output_index(item);
         let first_seen = self.seen_tool_blocks.insert(index);
         let mut events = Vec::new();
-        if first_seen {
-            if self.open_tool_blocks.insert(index) {
-                events.push(tool_block_start(index, tool_call)?);
-            }
-            if !tool_call.function.arguments.is_empty() {
-                self.add_output_tokens(&tool_call.function.arguments);
-                events.push(tool_json_delta(index, &tool_call.function.arguments)?);
-            }
+        if first_seen && self.open_tool_blocks.insert(index) {
+            events.push(tool_block_start(index, tool_call)?);
         }
-        if self.open_tool_blocks.remove(&index) || first_seen {
+        if self.open_tool_blocks.contains(&index)
+            && let Some(arguments) = item.pointer("/item/arguments").and_then(Value::as_str)
+        {
+            events.extend(self.missing_tool_arguments_events(index, arguments)?);
+        }
+        if self.open_tool_blocks.remove(&index) {
             events.push(content_block_stop(index)?);
         }
         Ok(events)
+    }
+
+    /// Emits only the suffix absent from prior deltas, keeping one JSON input per tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if upstream's final arguments contradict bytes already streamed.
+    fn missing_tool_arguments_events(&mut self, index: u32, arguments: &str) -> Result<Vec<Event>> {
+        let emitted = self.emitted_tool_arguments.entry(index).or_default();
+        let missing = arguments.strip_prefix(emitted.as_str()).ok_or_else(|| {
+            crate::Error::upstream(format!(
+                "tool arguments for output index {index} changed after streaming"
+            ))
+        })?;
+        if missing.is_empty() {
+            return Ok(Vec::new());
+        }
+        emitted.push_str(missing);
+        self.add_output_tokens(missing);
+        Ok(vec![tool_json_delta(index, missing)?])
     }
 
     fn completed_reasoning_events(&mut self, item: &Value, thinking: &str) -> Result<Vec<Event>> {
@@ -348,6 +381,10 @@ impl AnthropicRawStreamState {
             events.extend(Self::generated_image_events(response)?);
         }
 
+        if stop_reason == "stop" && !self.seen_tool_blocks.is_empty() {
+            "tool_calls".clone_into(&mut stop_reason);
+        }
+
         events.extend(self.close_open_blocks()?);
         events.push(message_delta_event(&stop_reason, &self.usage)?);
         events.push(message_stop_event()?);
@@ -356,7 +393,7 @@ impl AnthropicRawStreamState {
 
     fn merge_final_response(&mut self, response: &Value, stop_reason: &mut String) {
         merge_final_anthropic_usage(&mut self.usage, response.get("usage"));
-        if response_has_function_call(response) {
+        if *stop_reason == "stop" && response_has_function_call(response) {
             "tool_calls".clone_into(stop_reason);
         }
     }
@@ -663,6 +700,107 @@ mod tests {
         assert!(text.contains("\"input_tokens\":7"));
         assert!(text.contains("\"output_tokens\":4"));
         assert!(!text.contains("event: error"));
+    }
+
+    #[tokio::test]
+    async fn interleaved_tools_recover_missing_and_partial_arguments_before_block_stop() {
+        let upstream_events = [
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.output_item.added", "output_index": 1,
+                "item": {"type": "function_call", "id": "fc_b", "call_id": "call_b",
+                    "name": "list_directory", "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 0,
+                "item_id": "fc_a", "delta": "{\"path\":\""}),
+            json!({"type": "response.function_call_arguments.done", "output_index": 1,
+                "item_id": "fc_b"}),
+            json!({"type": "response.function_call_arguments.done", "output_index": 0,
+                "item_id": "fc_a", "arguments": "{\"path\":\"a.txt\"}"}),
+            json!({"type": "response.output_item.done", "output_index": 1,
+                "item": {"type": "function_call", "id": "fc_b", "call_id": "call_b",
+                    "name": "list_directory", "arguments": "{\"path\":\".\"}"}}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": "{\"path\":\"a.txt\"}"}}),
+            json!({"type": "response.completed", "response": {"status": "completed",
+                "finish_reason": "stop", "output": []}}),
+        ]
+        .into_iter()
+        .map(|value| Ok(json_sse_event(value)))
+        .collect::<Vec<_>>();
+        let response = anthropic_raw_messages_sse_response(
+            Box::pin(stream::iter(upstream_events)),
+            "gpt-5.5".to_owned(),
+            3,
+        )
+        .into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let events = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str::<Value>(data).unwrap())
+            .collect::<Vec<_>>();
+        let mut arguments = HashMap::<u32, String>::new();
+        let mut closed = BTreeSet::new();
+        for event in &events {
+            if event["type"] == "content_block_delta"
+                && event["delta"]["type"] == "input_json_delta"
+            {
+                let index = u32::try_from(event["index"].as_u64().unwrap()).unwrap();
+                arguments
+                    .entry(index)
+                    .or_default()
+                    .push_str(event["delta"]["partial_json"].as_str().unwrap());
+                assert!(
+                    !closed.contains(&index),
+                    "arguments arrived after block stop"
+                );
+            }
+            if event["type"] == "content_block_stop" {
+                closed.insert(u32::try_from(event["index"].as_u64().unwrap()).unwrap());
+            }
+        }
+
+        assert_eq!(
+            arguments.get(&0).map(String::as_str),
+            Some("{\"path\":\"a.txt\"}")
+        );
+        assert_eq!(
+            arguments.get(&1).map(String::as_str),
+            Some("{\"path\":\".\"}")
+        );
+        assert_eq!(closed, BTreeSet::from([0, 1]));
+        assert!(
+            events.iter().any(|event| event["type"] == "message_delta"
+                && event["delta"]["stop_reason"] == "tool_use")
+        );
+    }
+
+    #[tokio::test]
+    async fn incomplete_tool_stream_keeps_max_tokens_stop_reason() {
+        let upstream_events = [
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.incomplete", "response": {"status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"}, "output": []}}),
+        ]
+        .into_iter()
+        .map(|value| Ok(json_sse_event(value)))
+        .collect::<Vec<_>>();
+        let response = anthropic_raw_messages_sse_response(
+            Box::pin(stream::iter(upstream_events)),
+            "gpt-5.5".to_owned(),
+            3,
+        )
+        .into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(text.contains("\"stop_reason\":\"max_tokens\""));
+        assert!(!text.contains("\"stop_reason\":\"tool_use\""));
     }
 
     fn json_sse_event(value: Value) -> crate::codex::sse::JsonSseEvent {

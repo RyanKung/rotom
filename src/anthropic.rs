@@ -631,6 +631,7 @@ fn convert_tools(tools: &[ToolDefinition]) -> Vec<ChatTool> {
         .collect()
 }
 
+/// Maps Anthropic tool selection to the OpenAI-compatible request shape.
 fn convert_tool_choice(value: Value) -> Value {
     match value {
         Value::String(string) => match string.as_str() {
@@ -639,21 +640,31 @@ fn convert_tool_choice(value: Value) -> Value {
             "none" => json!("none"),
             _ => Value::String(string),
         },
-        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("tool") => {
-            let name = object.get("name").cloned().unwrap_or(Value::Null);
-            json!({
-                "type": "function",
-                "function": {"name": name}
-            })
-        }
+        Value::Object(object) => match object.get("type").and_then(Value::as_str) {
+            Some("auto") => json!("auto"),
+            Some("any") => json!("required"),
+            Some("none") => json!("none"),
+            Some("tool") => {
+                let name = object.get("name").cloned().unwrap_or(Value::Null);
+                json!({
+                    "type": "function",
+                    "function": {"name": name}
+                })
+            }
+            _ => Value::Object(object),
+        },
         other => other,
     }
 }
 
+/// Honors Anthropic's opt-out flag independently of the selected tool mode.
 fn parallel_tool_calls_enabled(tool_choice: Option<&Value>) -> bool {
     match tool_choice {
-        Some(Value::String(choice)) => choice != "none" && choice != "any",
-        Some(Value::Object(object)) => object.get("type").and_then(Value::as_str) != Some("tool"),
+        Some(Value::String(choice)) => choice != "none",
+        Some(Value::Object(object)) => {
+            object.get("type").and_then(Value::as_str) != Some("none")
+                && object.get("disable_parallel_tool_use") != Some(&Value::Bool(true))
+        }
         None | Some(_) => true,
     }
 }
