@@ -72,6 +72,113 @@ fn removed_cursor_models_cannot_fall_back_to_another_upstream() {
     assert!(state.upstream_for_model(&model).is_none());
 }
 
+#[test]
+fn configured_model_owner_routes_unfamiliar_id_to_its_provider() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let upstreams = [Provider::Codex, Provider::Kiro]
+        .into_iter()
+        .map(|provider| UpstreamState {
+            provider,
+            token_manager: TokenManager::new_for_provider(store.clone(), provider, http.clone()),
+            client: CodexClient::new_for_provider(http.clone(), provider),
+        })
+        .collect();
+    let state = AppState::new_multi_with_model_fallback(
+        upstreams,
+        None,
+        ModelList::from_id_owners([("next-gen-model".into(), "kiro")]),
+        None,
+    );
+
+    assert_eq!(
+        state
+            .upstream_for_model("next-gen-model")
+            .map(|upstream| upstream.provider),
+        Some(Provider::Kiro)
+    );
+    assert_eq!(
+        state
+            .upstream_for_model("kiro/next-gen-model")
+            .map(|upstream| upstream.provider),
+        Some(Provider::Kiro)
+    );
+}
+
+#[test]
+fn explicit_model_prefixes_route_to_their_provider_when_native_ids_overlap() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let upstreams = [Provider::Codex, Provider::Kiro]
+        .into_iter()
+        .map(|provider| UpstreamState {
+            provider,
+            token_manager: TokenManager::new_for_provider(store.clone(), provider, http.clone()),
+            client: CodexClient::new_for_provider(http.clone(), provider),
+        })
+        .collect();
+    let state = AppState::new_multi_with_model_fallback(
+        upstreams,
+        None,
+        ModelList::from_id_owners([
+            ("gpt-5.6-sol".into(), "openai-codex"),
+            ("kiro/gpt-5.6-sol".into(), "kiro"),
+        ]),
+        None,
+    );
+
+    for (id, provider) in [
+        ("gpt-5.6-sol", Provider::Codex),
+        ("openai-codex/gpt-5.6-sol", Provider::Codex),
+        ("kiro/gpt-5.6-sol", Provider::Kiro),
+    ] {
+        assert_eq!(
+            state
+                .upstream_for_model(id)
+                .map(|upstream| upstream.provider),
+            Some(provider),
+            "model {id} routed to the wrong provider"
+        );
+    }
+}
+
+#[test]
+fn explicit_codex_prefix_does_not_fall_back_to_another_provider() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let state = AppState::new_multi_with_model_fallback(
+        vec![UpstreamState {
+            provider: Provider::Kiro,
+            token_manager: TokenManager::new_for_provider(store, Provider::Kiro, http.clone()),
+            client: CodexClient::new_for_provider(http, Provider::Kiro),
+        }],
+        None,
+        ModelList::from_id_owners([("kiro/gpt-5.6-sol".into(), "kiro")]),
+        None,
+    );
+
+    assert!(
+        state
+            .upstream_for_model("openai-codex/gpt-5.6-sol")
+            .is_none()
+    );
+    assert_eq!(
+        state
+            .upstream_for_model("kiro/gpt-5.6-sol")
+            .map(|upstream| upstream.provider),
+        Some(Provider::Kiro)
+    );
+    assert_eq!(
+        state
+            .upstream_for_model("gpt-5.6-sol")
+            .map(|upstream| upstream.provider),
+        Some(Provider::Kiro)
+    );
+}
+
 async fn refresh_handler(Form(form): Form<HashMap<String, String>>) -> Json<Value> {
     assert_eq!(form.get("refresh_token").unwrap(), "old_refresh");
     Json(json!({

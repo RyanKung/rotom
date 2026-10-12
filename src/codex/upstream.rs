@@ -153,6 +153,7 @@ impl UpstreamProvider for GrokUpstream {
     }
 
     fn prepare_request(&self, body: &mut Value) {
+        strip_model_prefix(body, &["xai/", "grok/"]);
         remove_grok_unsupported_keys(body);
     }
 }
@@ -234,7 +235,7 @@ impl UpstreamProvider for VercelUpstream {
     }
 
     fn prepare_request(&self, body: &mut Value) {
-        strip_vercel_model_prefix(body);
+        strip_model_prefix(body, &["vercel/"]);
     }
 }
 
@@ -469,17 +470,17 @@ fn remove_codex_unsupported_keys(body: &mut Value) {
     }
 }
 
-/// Removes rotom's explicit routing prefix before forwarding a model id to Vercel.
-fn strip_vercel_model_prefix(body: &mut Value) {
+/// Removes a local routing prefix before forwarding a model id upstream.
+fn strip_model_prefix(body: &mut Value, prefixes: &[&str]) {
     let Some(object) = body.as_object_mut() else {
         return;
     };
     let Some(model) = object.get("model").and_then(Value::as_str) else {
         return;
     };
-    let Some(stripped) = model
-        .strip_prefix("vercel/")
-        .filter(|value| !value.is_empty())
+    let Some(stripped) = prefixes
+        .iter()
+        .find_map(|prefix| model.strip_prefix(prefix).filter(|value| !value.is_empty()))
     else {
         return;
     };
@@ -709,6 +710,17 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert!(body.get("service_tier").is_none());
         assert_eq!(headers["authorization"], "Bearer token");
+    }
+
+    #[test]
+    fn grok_adapter_forwards_native_model_id_for_prefixed_names() {
+        let adapter = adapter_for_provider(Provider::Grok);
+
+        for id in ["xai/grok-4.6", "grok/grok-4.6", "grok-4.6"] {
+            let mut body = json!({"model": id});
+            adapter.prepare_request(&mut body);
+            assert_eq!(body["model"], "grok-4.6");
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@ use clap::Parser;
 use rotom::config::{AuthStore, Credentials, Provider, now_unix};
 use rotom::timefmt::format_duration;
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -254,7 +255,7 @@ fn save_provider_credentials(store: &AuthStore, provider: Provider) {
 
 #[test]
 fn formats_models_grouped_by_provider() {
-    let output = format_models(&[Provider::Codex, Provider::Grok, Provider::Vercel]);
+    let output = format_models(&[Provider::Codex, Provider::Grok, Provider::Vercel], None);
 
     assert!(output.contains("OpenAI (codex)\n  gpt-6-astra"));
     assert!(output.contains("  gpt-6-astra\n"));
@@ -269,7 +270,7 @@ fn formats_models_grouped_by_provider() {
 
 #[test]
 fn formats_single_provider_models() {
-    let output = format_models(&[Provider::Grok]);
+    let output = format_models(&[Provider::Grok], None);
 
     assert!(output.starts_with("Grok (grok)\n"));
     assert!(output.contains("  grok-4.3\n"));
@@ -277,8 +278,108 @@ fn formats_single_provider_models() {
 }
 
 #[test]
+fn formats_configured_models_without_changing_other_providers() {
+    let config = AppConfig {
+        models: BTreeMap::from([(Provider::Grok, vec!["grok-new".into()])]),
+        ..AppConfig::default()
+    };
+    let output = format_models(&[Provider::Codex, Provider::Grok], Some(&config));
+
+    assert!(output.contains("OpenAI (codex)\n  gpt-6-astra"));
+    assert!(output.contains("Grok (grok)\n  grok-new\n"));
+    assert!(!output.contains("grok-4.6"));
+}
+
+#[tokio::test]
+async fn unprefixed_kiro_model_does_not_collide_with_codex_model() {
+    let auth = TestAuthStore::new();
+    let http = reqwest::Client::new();
+    let config = AppConfig {
+        models: BTreeMap::from([(Provider::Kiro, vec!["gpt-5.6-sol".into()])]),
+        ..AppConfig::default()
+    };
+    let upstreams = [Provider::Codex, Provider::Kiro]
+        .into_iter()
+        .map(|provider| super::UpstreamState {
+            provider,
+            token_manager: rotom::token::TokenManager::new_for_provider(
+                auth.store.clone(),
+                provider,
+                http.clone(),
+            ),
+            client: rotom::codex::client::CodexClient::new_for_provider(http.clone(), provider),
+        })
+        .collect::<Vec<_>>();
+
+    let models = super::resolve_model_list_for_upstreams(&upstreams, Some(&config))
+        .await
+        .unwrap();
+    assert!(
+        models
+            .data
+            .iter()
+            .any(|model| model.id == "gpt-5.6-sol" && model.owned_by == "openai-codex")
+    );
+    assert!(
+        models
+            .data
+            .iter()
+            .any(|model| model.id == "kiro/gpt-5.6-sol" && model.owned_by == "kiro")
+    );
+    let output = format_models(&[Provider::Kiro], Some(&config));
+    assert!(output.contains("  kiro/gpt-5.6-sol\n"));
+}
+
+#[tokio::test]
+async fn configured_vercel_models_skip_live_discovery() {
+    let auth = TestAuthStore::new();
+    let http = reqwest::Client::new();
+    let config = AppConfig {
+        models: BTreeMap::from([(Provider::Vercel, vec!["custom/eval".into()])]),
+        ..AppConfig::default()
+    };
+    let upstream = super::UpstreamState {
+        provider: Provider::Vercel,
+        token_manager: rotom::token::TokenManager::new_for_provider(
+            auth.store.clone(),
+            Provider::Vercel,
+            http.clone(),
+        ),
+        client: rotom::codex::client::CodexClient::new_for_provider(http, Provider::Vercel),
+    };
+
+    let models = super::resolve_model_list_for_upstreams(&[upstream], Some(&config))
+        .await
+        .unwrap();
+    assert_eq!(models.data.len(), 1);
+    assert_eq!(models.data[0].id, "custom/eval");
+    assert_eq!(models.data[0].owned_by, "vercel-ai-gateway");
+}
+
+#[tokio::test]
+async fn served_models_use_defaults_without_config() {
+    let auth = TestAuthStore::new();
+    let http = reqwest::Client::new();
+    let upstream = super::UpstreamState {
+        provider: Provider::Grok,
+        token_manager: rotom::token::TokenManager::new_for_provider(
+            auth.store.clone(),
+            Provider::Grok,
+            http.clone(),
+        ),
+        client: rotom::codex::client::CodexClient::new_for_provider(http, Provider::Grok),
+    };
+
+    let models = super::resolve_model_list_for_upstreams(&[upstream], None)
+        .await
+        .unwrap();
+    assert_eq!(models.data[0].id, "grok-4.7");
+    assert_eq!(models.data[0].owned_by, "xai");
+}
+
+#[test]
 fn formats_kiro_models() {
-    let output = format_models(&[Provider::Kiro]);
+    let output = format_models(&[Provider::Kiro], None);
 
     assert!(output.starts_with("Kiro (kiro)\n  auto\n"));
     assert!(output.contains("  claude-opus-5.5\n"));
@@ -290,7 +391,7 @@ fn formats_kiro_models() {
 
 #[test]
 fn formats_vercel_models() {
-    let output = format_models(&[Provider::Vercel]);
+    let output = format_models(&[Provider::Vercel], None);
 
     assert!(output.starts_with("Vercel AI Gateway (vercel)\n"));
     assert!(output.contains("  openai/gpt-6-astra\n"));

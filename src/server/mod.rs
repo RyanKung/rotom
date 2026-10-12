@@ -153,15 +153,52 @@ impl AppState {
     }
 
     pub(crate) fn upstream_for_model(&self, model: &str) -> Option<&UpstreamState> {
-        let provider = provider_for_model(model)?;
+        let inferred = provider_for_model(model)?;
+        // Explicit local prefixes select their provider even when another
+        // provider advertises the same upstream name without a prefix.
+        let provider = if model.starts_with("openai-codex/") {
+            Provider::Codex
+        } else if model.starts_with("vercel/")
+            || model.starts_with("kiro/")
+            || model.starts_with("xai/")
+            || model.starts_with("grok/")
+        {
+            inferred
+        } else {
+            self.listed_provider_for_model(model).unwrap_or(inferred)
+        };
         self.upstreams
             .iter()
             .find(|upstream| upstream.provider == provider)
             .or_else(|| {
-                (provider == Provider::Codex)
+                // Legacy fallback applies only to unqualified Codex-like IDs.
+                (provider == Provider::Codex && !model.starts_with("openai-codex/"))
                     .then(|| self.upstreams.first())
                     .flatten()
             })
+    }
+
+    /// Uses the advertised model owner to route configured IDs with unfamiliar names.
+    fn listed_provider_for_model(&self, model: &str) -> Option<Provider> {
+        let listed = self
+            .models
+            .data
+            .iter()
+            .find(|listed| listed.id == model)
+            .or_else(|| {
+                let normalized = normalize_model_for_support(model);
+                self.models
+                    .data
+                    .iter()
+                    .find(|listed| normalize_model_for_support(&listed.id) == normalized)
+            })?;
+        match listed.owned_by {
+            "openai-codex" => Some(Provider::Codex),
+            "xai" => Some(Provider::Grok),
+            "kiro" => Some(Provider::Kiro),
+            "vercel-ai-gateway" => Some(Provider::Vercel),
+            _ => None,
+        }
     }
 
     pub(crate) fn default_upstream(&self) -> Option<&UpstreamState> {

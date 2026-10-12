@@ -71,7 +71,7 @@ fn grok_state(
             client: CodexClient::new_for_provider_base_url(http, Provider::Grok, base_url),
         }],
         None,
-        ModelList::from_ids(models),
+        ModelList::from_id_owners(models.into_iter().map(|id| (id.to_owned(), "xai"))),
         None,
     )
 }
@@ -131,6 +131,42 @@ async fn grok_responses_use_native_upstream_ids() {
     assert_eq!(store, true);
     assert_eq!(stream, false);
     assert!(!has_previous_response_id);
+}
+
+#[tokio::test]
+async fn prefixed_grok_model_is_advertised_and_forwarded_without_prefix() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    save_grok_credentials(&store);
+    let captured = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let state = grok_state(
+        store,
+        spawn_grok_native_responses_server(captured.clone()).await,
+        ["xai/grok-4.3"],
+    );
+
+    let listed = handlers::models(axum::extract::State(state.clone()), HeaderMap::new()).await;
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_body = to_bytes(listed.into_body(), usize::MAX).await.unwrap();
+    let listed_json = serde_json::from_slice::<Value>(&listed_body).unwrap();
+    assert_eq!(listed_json["data"][0]["id"], "xai/grok-4.3");
+
+    let response = handlers::responses(
+        axum::extract::State(state),
+        HeaderMap::new(),
+        Json(
+            serde_json::from_value(json!({
+                "model": "xai/grok-4.3",
+                "input": "hello",
+                "stream": false
+            }))
+            .unwrap(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(captured.lock().await[0]["model"], "grok-4.3");
 }
 
 #[tokio::test]
