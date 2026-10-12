@@ -214,6 +214,134 @@ fn imports_cli_social_token_without_device_registration() {
     assert_eq!(account_label(&secret), "kiro-desktop:ap-southeast-1");
 }
 
+/// SSO token fixture without the ARN that Kiro stores in its selected profile.
+const SSO_TOKEN_WITHOUT_PROFILE_ARN: &str = r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1"}"#;
+
+/// Creates a Kiro CLI database with an OIDC token and an optional profile row.
+fn sso_cli_database(dir: &TempDir, token: &str, profile_state: Option<&[u8]>) -> PathBuf {
+    let path = dir.path().join("data.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            ["kirocli:oidc:token", token],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            [
+                "kirocli:oidc:device-registration",
+                r#"{"client_id":"client","client_secret":"secret","region":"us-east-1"}"#,
+            ],
+        )
+        .unwrap();
+    if let Some(state) = profile_state {
+        connection
+            .execute(
+                "INSERT INTO state (key, value) VALUES (?1, ?2)",
+                rusqlite::params![KIRO_CLI_PROFILE_STATE_KEY, state],
+            )
+            .unwrap();
+    }
+    path
+}
+
+/// An SSO import retains the selected profile and routes to its API region.
+#[test]
+fn imports_sso_profile_arn_from_selected_cli_state() {
+    let dir = TempDir::new().unwrap();
+    let path = sso_cli_database(
+        &dir,
+        SSO_TOKEN_WITHOUT_PROFILE_ARN,
+        Some(br#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/selected"}"#),
+    );
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:eu-central-1:123:profile/selected"
+    );
+    assert_eq!(api_region_from_credentials(&credentials).unwrap(), "eu-central-1");
+    assert_eq!(credentials.account_id, "kiro-sso:us-east-1->eu-central-1");
+}
+
+/// A token-provided ARN wins without relying on the optional state schema.
+#[test]
+fn imports_sso_token_arn_without_a_readable_state_table() {
+    let dir = TempDir::new().unwrap();
+    let token = r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","profile_arn":"arn:aws:codewhisperer:us-west-2:123:profile/token"}"#;
+    let path = sso_cli_database(&dir, token, None);
+    Connection::open(&path)
+        .unwrap()
+        .execute_batch("DROP TABLE state; CREATE TABLE state (value BLOB);")
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:us-west-2:123:profile/token"
+    );
+}
+
+/// Missing or undecodable profile state fails the SSO import before serving.
+#[test]
+fn rejects_sso_import_when_selected_profile_is_missing_or_malformed() {
+    for profile_state in [None, Some(b"not json".as_slice()), Some(b"\xff".as_slice())] {
+        let dir = TempDir::new().unwrap();
+        let path = sso_cli_database(&dir, SSO_TOKEN_WITHOUT_PROFILE_ARN, profile_state);
+
+        let error = KiroOAuthClient::import_cli_database(&path).unwrap_err();
+
+        assert!(error.to_string().contains("no profile ARN"), "{error}");
+    }
+}
+
+/// Social imports never borrow the ARN of a different selected CLI profile.
+#[test]
+fn leaves_social_import_without_profile_arn_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("data.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            [
+                "kirocli:social:token",
+                r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000}"#,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)",
+            [
+                KIRO_CLI_PROFILE_STATE_KEY,
+                r#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/selected"}"#,
+            ],
+        )
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(credentials.account_id, "kiro-desktop:us-east-1");
+    assert!(profile_arn_from_credentials(&credentials).is_err());
+}
+
 #[test]
 fn builds_sso_refresh_body_with_camel_case_json() {
     let body = sso_refresh_body("client", "secret", "old-refresh");

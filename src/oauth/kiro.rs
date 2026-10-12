@@ -35,6 +35,8 @@ const KIRO_CLI_DEVICE_KEYS: &[&str] = &[
     "codewhisperer:oidc:device-registration",
     "codewhisperer:odic:device-registration",
 ];
+/// Kiro CLI state key for the profile selected by an IAM Identity Center login.
+const KIRO_CLI_PROFILE_STATE_KEY: &str = "api.codewhisperer.profile";
 
 /// Default Kiro IDE desktop token location relative to the user's home directory.
 pub const KIRO_DESKTOP_TOKEN_RELATIVE_PATH: &str = ".aws/sso/cache/kiro-auth-token.json";
@@ -239,7 +241,8 @@ impl KiroOAuthClient {
     /// # Errors
     ///
     /// Returns an error when the database cannot be read or required token and
-    /// device-registration fields are missing.
+    /// device-registration fields are missing, or when an SSO login has no
+    /// profile ARN in either its token or the selected CLI profile.
     pub fn import_cli_database(path: &Path) -> Result<Credentials> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| {
@@ -255,7 +258,7 @@ impl KiroOAuthClient {
             ))
         })?;
         let device = first_auth_value(&connection, KIRO_CLI_DEVICE_KEYS)?;
-        credentials_from_cli_values(&token, device.as_deref())
+        credentials_from_cli_values(&connection, &token, device.as_deref())
     }
 
     /// Imports credentials from a Kiro IDE desktop token JSON file.
@@ -472,7 +475,13 @@ impl KiroAuthorizationCallback {
     }
 }
 
-fn credentials_from_cli_values(token_raw: &str, device_raw: Option<&str>) -> Result<Credentials> {
+/// Converts Kiro CLI token and device records into credentials, reading the
+/// selected profile only when an SSO token does not contain its own ARN.
+fn credentials_from_cli_values(
+    connection: &Connection,
+    token_raw: &str,
+    device_raw: Option<&str>,
+) -> Result<Credentials> {
     let token = parse_json_object(token_raw, "Kiro CLI token")?;
     let device = device_raw
         .map(|raw| parse_json_object(raw, "Kiro CLI device registration"))
@@ -521,9 +530,16 @@ fn credentials_from_cli_values(token_raw: &str, device_raw: Option<&str>) -> Res
                 .and_then(|item| optional_string(item, &["ssoRegion", "sso_region", "region"]))
         })
         .unwrap_or_else(|| DEFAULT_REGION.to_owned());
-    let api_region = profile_arn
-        .as_deref()
-        .and_then(region_from_profile_arn)
+    // Kiro requests require a profile ARN, so reject an incomplete SSO import
+    // before it is saved instead of failing on every request.
+    let profile_arn = profile_arn
+        .or_else(|| cli_state_profile_arn(connection))
+        .ok_or_else(|| {
+            Error::config(
+                "Kiro CLI SSO credentials have no profile ARN in the token or selected profile; select a Kiro profile, then import again",
+            )
+        })?;
+    let api_region = region_from_profile_arn(&profile_arn)
         .map(str::to_owned)
         .or_else(|| optional_string(&token, &["apiRegion", "api_region"]))
         .unwrap_or_else(|| sso_region.clone());
@@ -535,7 +551,7 @@ fn credentials_from_cli_values(token_raw: &str, device_raw: Option<&str>) -> Res
         client_secret,
         sso_region,
         api_region,
-        profile_arn,
+        profile_arn: Some(profile_arn),
     };
     credentials_from_import(access_token, expires_at, &secret)
 }
@@ -681,6 +697,22 @@ fn auth_value(connection: &Connection, key: &str) -> Result<Option<String>> {
             "failed to read Kiro auth key {key}: {error}"
         ))),
     }
+}
+
+/// Reads an optional selected profile ARN from the Kiro CLI `SQLite` state.
+///
+/// A missing table, missing row, malformed JSON, or undecodable BLOB is not an
+/// ARN source and must not make an otherwise valid token fail to import.
+fn cli_state_profile_arn(connection: &Connection) -> Option<String> {
+    let raw = connection
+        .query_row(
+            "SELECT CAST(value AS TEXT) FROM state WHERE key = ?1 LIMIT 1",
+            [KIRO_CLI_PROFILE_STATE_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()?;
+    let profile = serde_json::from_str::<Value>(&raw).ok()?;
+    optional_string(&profile, &["arn", "profileArn", "profile_arn"])
 }
 
 fn parse_json_object(raw: &str, label: &str) -> Result<Value> {
