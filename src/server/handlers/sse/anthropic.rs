@@ -161,7 +161,12 @@ impl StreamEventMapper for AnthropicRawStreamState {
 
     fn finish_events(&mut self) -> Result<Vec<Event>> {
         let mut events = self.close_open_blocks()?;
-        events.push(message_delta_event("stop", &self.usage)?);
+        let stop_reason = if self.seen_tool_blocks.is_empty() {
+            "stop"
+        } else {
+            "tool_calls"
+        };
+        events.push(message_delta_event(stop_reason, &self.usage)?);
         events.push(message_stop_event()?);
         Ok(events)
     }
@@ -252,6 +257,9 @@ impl AnthropicRawStreamState {
     }
 
     fn open_tool_from_delta(&mut self, item: &Value, index: u32) -> Result<Vec<Event>> {
+        if self.seen_tool_blocks.contains(&index) {
+            return Ok(Vec::new());
+        }
         let item_id = item.get("item_id").and_then(Value::as_str);
         let Some(meta) = item_id.and_then(|id| self.tool_meta.get(id)) else {
             return Ok(Vec::new());
@@ -314,17 +322,25 @@ impl AnthropicRawStreamState {
     }
 
     /// Emits only the suffix absent from prior deltas, keeping one JSON input per tool.
+    /// Equivalent complete JSON values need no further delta even if their bytes differ.
     ///
     /// # Errors
     ///
-    /// Returns an error if upstream's final arguments contradict bytes already streamed.
+    /// Returns an error if upstream's final arguments contradict the streamed input.
     fn missing_tool_arguments_events(&mut self, index: u32, arguments: &str) -> Result<Vec<Event>> {
         let emitted = self.emitted_tool_arguments.entry(index).or_default();
-        let missing = arguments.strip_prefix(emitted.as_str()).ok_or_else(|| {
-            crate::Error::upstream(format!(
+        let Some(missing) = arguments.strip_prefix(emitted.as_str()) else {
+            if let (Ok(streamed), Ok(final_value)) = (
+                serde_json::from_str::<Value>(emitted),
+                serde_json::from_str::<Value>(arguments),
+            ) && streamed == final_value
+            {
+                return Ok(Vec::new());
+            }
+            return Err(crate::Error::upstream(format!(
                 "tool arguments for output index {index} changed after streaming"
-            ))
-        })?;
+            )));
+        };
         if missing.is_empty() {
             return Ok(Vec::new());
         }
@@ -801,6 +817,101 @@ mod tests {
 
         assert!(text.contains("\"stop_reason\":\"max_tokens\""));
         assert!(!text.contains("\"stop_reason\":\"tool_use\""));
+    }
+
+    #[tokio::test]
+    async fn eof_after_completed_tool_block_reports_tool_use() {
+        let text = render_raw_messages(vec![
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": "{\"path\":\"a.txt\"}"}}),
+        ])
+        .await;
+
+        assert!(text.contains("\"stop_reason\":\"tool_use\""));
+        assert_eq!(text.matches("event: content_block_stop").count(), 1);
+        assert!(!text.contains("event: error"));
+    }
+
+    #[tokio::test]
+    async fn equivalent_final_tool_arguments_do_not_abort_stream() {
+        let text = render_raw_messages(vec![
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 0,
+                "item_id": "fc_a", "delta": "{\"x\":1}"}),
+            json!({"type": "response.function_call_arguments.done", "output_index": 0,
+                "item_id": "fc_a", "arguments": "{\"x\": 1}"}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": "{\"x\": 1}"}}),
+            json!({"type": "response.completed", "response": {"status": "completed",
+                "finish_reason": "stop", "output": []}}),
+        ])
+        .await;
+
+        assert_eq!(text.matches("event: content_block_delta").count(), 1);
+        assert!(text.contains("\"stop_reason\":\"tool_use\""));
+        assert!(!text.contains("event: error"));
+    }
+
+    #[test]
+    fn different_final_tool_arguments_still_fail() {
+        let mut state = AnthropicRawStreamState::new(0);
+        state
+            .emitted_tool_arguments
+            .insert(0, "{\"x\":1}".to_owned());
+
+        let error = state
+            .missing_tool_arguments_events(0, "{\"x\":2}")
+            .err()
+            .unwrap();
+
+        assert!(error.to_string().contains("changed after streaming"));
+    }
+
+    #[tokio::test]
+    async fn late_tool_arguments_do_not_reopen_closed_block() {
+        let text = render_raw_messages(vec![
+            json!({"type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": ""}}),
+            json!({"type": "response.output_item.done", "output_index": 0,
+                "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                    "name": "read_file", "arguments": "{\"x\":1}"}}),
+            json!({"type": "response.function_call_arguments.done", "output_index": 0,
+                "item_id": "fc_a", "arguments": "{\"x\":1}"}),
+            json!({"type": "response.function_call_arguments.delta", "output_index": 0,
+                "item_id": "fc_a", "delta": "{\"x\":1}"}),
+            json!({"type": "response.completed", "response": {"status": "completed",
+                "finish_reason": "stop", "output": []}}),
+        ])
+        .await;
+
+        assert_eq!(text.matches("event: content_block_start").count(), 1);
+        assert_eq!(text.matches("event: content_block_delta").count(), 1);
+        assert_eq!(text.matches("event: content_block_stop").count(), 1);
+        assert!(!text.contains("event: error"));
+    }
+
+    /// Renders a finite sequence of upstream events as an Anthropic SSE response.
+    async fn render_raw_messages(values: Vec<Value>) -> String {
+        let upstream_events = values
+            .into_iter()
+            .map(|value| Ok(json_sse_event(value)))
+            .collect::<Vec<_>>();
+        let response = anthropic_raw_messages_sse_response(
+            Box::pin(stream::iter(upstream_events)),
+            "gpt-5.5".to_owned(),
+            3,
+        )
+        .into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
     }
 
     fn json_sse_event(value: Value) -> crate::codex::sse::JsonSseEvent {

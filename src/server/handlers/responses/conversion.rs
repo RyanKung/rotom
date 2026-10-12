@@ -825,7 +825,6 @@ fn decode_compaction_summary(payload: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use serde_json::json;
 
     #[test]
