@@ -102,6 +102,8 @@ To replace the advertised models for specific providers, add `models` to
 The config file and `models` field are optional. Each array replaces that
 provider's complete list; providers not named here keep their built-in list.
 An empty array advertises no models for that provider.
+Older config files with `"models": []` are accepted as having no overrides.
+To migrate a non-empty legacy `models` array, replace it with a provider map.
 Model IDs may include or omit their local routing prefix (`openai-codex/`,
 `xai/`, `grok/`, `kiro/`, or `vercel/`). The prefix is removed before forwarding
 to that upstream. Rotom keeps the configured spelling when it identifies the

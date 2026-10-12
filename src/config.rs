@@ -1,5 +1,8 @@
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Serialize,
+    de::{self, MapAccess, SeqAccess, Visitor, value::MapAccessDeserializer},
+};
 use std::collections::BTreeMap;
 use std::{
     env,
@@ -157,11 +160,55 @@ pub struct AppConfig {
     #[serde(default)]
     pub model_fallback: Option<String>,
     /// Complete replacement model lists for selected providers. Missing providers use defaults.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_model_overrides",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub models: BTreeMap<Provider, Vec<String>>,
     /// Default upstream credential provider used by `serve` and `daemon install`.
     #[serde(default)]
     pub provider: Option<Provider>,
+}
+
+/// Reads provider model overrides while accepting an empty array from older config files.
+fn deserialize_model_overrides<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<Provider, Vec<String>>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    /// Distinguishes current provider maps from the obsolete model-list array.
+    struct ModelOverridesVisitor;
+
+    impl<'de> Visitor<'de> for ModelOverridesVisitor {
+        type Value = BTreeMap<Provider, Vec<String>>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a provider-to-model-list map or an empty legacy array")
+        }
+
+        fn visit_map<A>(self, map: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            BTreeMap::deserialize(MapAccessDeserializer::new(map))
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            if sequence.next_element::<de::IgnoredAny>()?.is_some() {
+                return Err(de::Error::custom(
+                    "non-empty legacy models array is unsupported; use a provider-to-model-list map",
+                ));
+            }
+            Ok(BTreeMap::new())
+        }
+    }
+
+    deserializer.deserialize_any(ModelOverridesVisitor)
 }
 
 /// Loads and saves persisted OAuth credentials from a single file.
@@ -673,6 +720,35 @@ mod tests {
         );
         assert_eq!(config.models.get(&Provider::Kiro), Some(&Vec::new()));
         assert!(!config.models.contains_key(&Provider::Codex));
+    }
+
+    #[test]
+    fn loads_and_migrates_empty_legacy_models_array() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(&path, r#"{"bind_port":14550,"models":[]}"#).unwrap();
+        let store = AppConfigStore::new(&path);
+
+        let config = store.load().unwrap().unwrap();
+        assert_eq!(config.bind_port, Some(14550));
+        assert!(config.models.is_empty());
+
+        store.save(&config).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["bind_port"], 14550);
+        assert!(saved.get("models").is_none());
+    }
+
+    #[test]
+    fn rejects_nonempty_legacy_models_array_with_migration_hint() {
+        let error = parse_app_config(r#"{"models":["gpt-5.5"]}"#).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("non-empty legacy models array is unsupported")
+        );
     }
 
     #[test]
