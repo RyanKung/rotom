@@ -160,6 +160,11 @@ impl StreamEventMapper for AnthropicRawStreamState {
     }
 
     fn finish_events(&mut self) -> Result<Vec<Event>> {
+        if !self.open_tool_blocks.is_empty() {
+            return Err(crate::Error::upstream(
+                "upstream stream ended before tool call completed",
+            ));
+        }
         let mut events = self.close_open_blocks()?;
         let stop_reason = if self.seen_tool_blocks.is_empty() {
             "stop"
@@ -834,6 +839,20 @@ mod tests {
         assert!(text.contains("\"stop_reason\":\"tool_use\""));
         assert_eq!(text.matches("event: content_block_stop").count(), 1);
         assert!(!text.contains("event: error"));
+    }
+
+    #[tokio::test]
+    async fn eof_during_tool_block_reports_stream_error() {
+        let text = render_raw_messages(vec![json!({
+            "type": "response.output_item.added", "output_index": 0,
+            "item": {"type": "function_call", "id": "fc_a", "call_id": "call_a",
+                "name": "read_file", "arguments": ""}
+        })])
+        .await;
+
+        assert!(text.contains("event: error"));
+        assert!(text.contains("upstream stream ended before tool call completed"));
+        assert!(!text.contains("event: message_stop"));
     }
 
     #[tokio::test]
