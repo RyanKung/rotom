@@ -214,6 +214,157 @@ fn imports_cli_social_token_without_device_registration() {
     assert_eq!(account_label(&secret), "kiro-desktop:ap-southeast-1");
 }
 
+/// Builds a kiro-cli database shaped like an IAM Identity Center login: an
+/// OIDC token without a profile ARN plus a device registration, and an
+/// optional selected profile in the `state` table.
+fn identity_center_cli_database(dir: &TempDir, token: &str, state_profile: Option<&str>) -> PathBuf {
+    let path = dir.path().join("data.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            ["kirocli:odic:token", token],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            [
+                "kirocli:odic:device-registration",
+                r#"{"client_id":"client","client_secret":"secret","region":"us-east-1"}"#,
+            ],
+        )
+        .unwrap();
+    if let Some(profile) = state_profile {
+        connection
+            .execute(
+                "INSERT INTO state (key, value) VALUES (?1, ?2)",
+                ["api.codewhisperer.profile", profile],
+            )
+            .unwrap();
+    }
+    path
+}
+
+const IDENTITY_CENTER_TOKEN: &str = r#"{"access_token":"access","refresh_token":"refresh","expires_at":"2030-01-01T00:00:00Z","region":"us-east-1","start_url":"https://example.awsapps.com/start","oauth_flow":"DeviceCode","scopes":["codewhisperer:completions"]}"#;
+
+#[test]
+fn imports_identity_center_profile_arn_from_cli_state() {
+    let dir = TempDir::new().unwrap();
+    let path = identity_center_cli_database(
+        &dir,
+        IDENTITY_CENTER_TOKEN,
+        Some(r#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/STATE","profile_name":"dev"}"#),
+    );
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:eu-central-1:123:profile/STATE"
+    );
+    assert_eq!(api_region_from_credentials(&credentials).unwrap(), "eu-central-1");
+    assert_eq!(credentials.account_id, "kiro-sso:us-east-1->eu-central-1");
+}
+
+#[test]
+fn token_profile_arn_takes_precedence_over_cli_state() {
+    let dir = TempDir::new().unwrap();
+    let token = r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","profile_arn":"arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"}"#;
+    let path = identity_center_cli_database(
+        &dir,
+        token,
+        Some(r#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/STATE","profile_name":"dev"}"#),
+    );
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"
+    );
+}
+
+#[test]
+fn token_profile_arn_does_not_require_readable_cli_state() {
+    let dir = TempDir::new().unwrap();
+    let token = r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","profile_arn":"arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"}"#;
+    let path = identity_center_cli_database(&dir, token, None);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TABLE state; CREATE TABLE state (key TEXT PRIMARY KEY);")
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"
+    );
+}
+
+#[test]
+fn social_import_does_not_borrow_selected_sso_profile() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("data.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            [
+                "kirocli:social:token",
+                r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","provider":"google"}"#,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)",
+            [
+                "api.codewhisperer.profile",
+                r#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/SSO"}"#,
+            ],
+        )
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(credentials.account_id, "kiro-desktop:us-east-1");
+    assert!(profile_arn_from_credentials(&credentials).is_err());
+}
+
+#[test]
+fn rejects_identity_center_import_without_any_profile_arn() {
+    let dir = TempDir::new().unwrap();
+    let path = identity_center_cli_database(&dir, IDENTITY_CENTER_TOKEN, None);
+
+    let error = KiroOAuthClient::import_cli_database(&path).unwrap_err();
+
+    assert!(error.to_string().contains("no profile ARN"), "{error}");
+}
+
+#[test]
+fn ignores_malformed_cli_state_profile() {
+    let dir = TempDir::new().unwrap();
+    let path = identity_center_cli_database(&dir, IDENTITY_CENTER_TOKEN, Some("not json"));
+
+    let error = KiroOAuthClient::import_cli_database(&path).unwrap_err();
+
+    assert!(error.to_string().contains("no profile ARN"), "{error}");
+}
+
 #[test]
 fn builds_sso_refresh_body_with_camel_case_json() {
     let body = sso_refresh_body("client", "secret", "old-refresh");
