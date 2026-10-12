@@ -241,8 +241,8 @@ impl KiroOAuthClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the database cannot be read or required token and
-    /// device-registration fields are missing.
+    /// Returns an error when the database cannot be read, required token or
+    /// device-registration fields are missing, or an SSO login has no profile ARN.
     pub fn import_cli_database(path: &Path) -> Result<Credentials> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| {
@@ -258,8 +258,7 @@ impl KiroOAuthClient {
             ))
         })?;
         let device = first_auth_value(&connection, KIRO_CLI_DEVICE_KEYS)?;
-        let state_profile_arn = cli_state_profile_arn(&connection)?;
-        credentials_from_cli_values(&token, device.as_deref(), state_profile_arn)
+        credentials_from_cli_values(&connection, &token, device.as_deref())
     }
 
     /// Imports credentials from a Kiro IDE desktop token JSON file.
@@ -476,10 +475,12 @@ impl KiroAuthorizationCallback {
     }
 }
 
+/// Converts Kiro CLI token and device records into credentials, reading the
+/// selected profile only when an SSO token does not contain its own ARN.
 fn credentials_from_cli_values(
+    connection: &Connection,
     token_raw: &str,
     device_raw: Option<&str>,
-    state_profile_arn: Option<String>,
 ) -> Result<Credentials> {
     let token = parse_json_object(token_raw, "Kiro CLI token")?;
     let device = device_raw
@@ -488,9 +489,7 @@ fn credentials_from_cli_values(
     let access_token = required_string(&token, &["accessToken", "access_token"])?;
     let refresh_token = required_string(&token, &["refreshToken", "refresh_token"])?;
     let expires_at = parse_expires_at(&token)?;
-    // A profile ARN embedded in the token wins; otherwise fall back to the
-    // profile kiro-cli selected and stored in its `state` table.
-    let profile_arn = optional_string(&token, &["profileArn", "profile_arn"]).or(state_profile_arn);
+    let profile_arn = optional_string(&token, &["profileArn", "profile_arn"]);
     let Some(client_id) = optional_string(&token, &["clientId", "client_id"]).or_else(|| {
         device
             .as_ref()
@@ -533,7 +532,7 @@ fn credentials_from_cli_values(
         .unwrap_or_else(|| DEFAULT_REGION.to_owned());
     // SSO refreshes never return a profile ARN, so importing without one would
     // only fail later on every request. Reject it here with an actionable error.
-    let profile_arn = profile_arn.ok_or_else(|| {
+    let profile_arn = profile_arn.or_else(|| cli_state_profile_arn(connection)).ok_or_else(|| {
         Error::config(
             "Kiro CLI IAM Identity Center credentials have no profile ARN in the token or in kiro-cli's selected profile; select a profile in kiro-cli, then run `rotom kiro import` again",
         )
@@ -700,36 +699,18 @@ fn auth_value(connection: &Connection, key: &str) -> Result<Option<String>> {
 
 /// Reads the profile ARN kiro-cli stores in its `state` table, if any.
 ///
-/// Missing tables, rows, or malformed values yield `None` so callers can
-/// decide whether a profile ARN is required.
-fn cli_state_profile_arn(connection: &Connection) -> Result<Option<String>> {
-    let has_state_table = connection
+/// Missing tables, rows, malformed JSON, or undecodable BLOBs yield `None` so
+/// callers can decide whether a profile ARN is required.
+fn cli_state_profile_arn(connection: &Connection) -> Option<String> {
+    let raw = connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'state')",
-            [],
-            |row| row.get::<_, bool>(0),
+            "SELECT CAST(value AS TEXT) FROM state WHERE key = ?1 LIMIT 1",
+            [KIRO_CLI_PROFILE_STATE_KEY],
+            |row| row.get::<_, String>(0),
         )
-        .map_err(|error| Error::config(format!("failed to inspect Kiro CLI database: {error}")))?;
-    if !has_state_table {
-        return Ok(None);
-    }
-    // `state.value` is declared BLOB; cast so text and blob encodings both read.
-    let raw = match connection.query_row(
-        "SELECT CAST(value AS TEXT) FROM state WHERE key = ?1 LIMIT 1",
-        [KIRO_CLI_PROFILE_STATE_KEY],
-        |row| row.get::<_, Option<String>>(0),
-    ) {
-        Ok(value) => value,
-        Err(rusqlite::Error::QueryReturnedNoRows) => None,
-        Err(error) => {
-            return Err(Error::config(format!(
-                "failed to read Kiro CLI state key {KIRO_CLI_PROFILE_STATE_KEY}: {error}"
-            )));
-        }
-    };
-    Ok(raw
-        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-        .and_then(|value| optional_string(&value, &["arn", "profileArn", "profile_arn"])))
+        .ok()?;
+    let profile = serde_json::from_str::<Value>(&raw).ok()?;
+    optional_string(&profile, &["arn", "profileArn", "profile_arn"])
 }
 
 fn parse_json_object(raw: &str, label: &str) -> Result<Value> {

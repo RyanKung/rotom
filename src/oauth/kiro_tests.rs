@@ -292,6 +292,60 @@ fn token_profile_arn_takes_precedence_over_cli_state() {
 }
 
 #[test]
+fn token_profile_arn_does_not_require_readable_cli_state() {
+    let dir = TempDir::new().unwrap();
+    let token = r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","profile_arn":"arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"}"#;
+    let path = identity_center_cli_database(&dir, token, None);
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TABLE state; CREATE TABLE state (key TEXT PRIMARY KEY);")
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(
+        profile_arn_from_credentials(&credentials).unwrap(),
+        "arn:aws:codewhisperer:us-west-2:123:profile/TOKEN"
+    );
+}
+
+#[test]
+fn social_import_does_not_borrow_selected_sso_profile() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("data.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT);
+             CREATE TABLE state (key TEXT PRIMARY KEY, value BLOB);",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO auth_kv (key, value) VALUES (?1, ?2)",
+            [
+                "kirocli:social:token",
+                r#"{"access_token":"access","refresh_token":"refresh","expires_at":1893456000,"region":"us-east-1","provider":"google"}"#,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)",
+            [
+                "api.codewhisperer.profile",
+                r#"{"arn":"arn:aws:codewhisperer:eu-central-1:123:profile/SSO"}"#,
+            ],
+        )
+        .unwrap();
+
+    let credentials = KiroOAuthClient::import_cli_database(&path).unwrap();
+
+    assert_eq!(credentials.account_id, "kiro-desktop:us-east-1");
+    assert!(profile_arn_from_credentials(&credentials).is_err());
+}
+
+#[test]
 fn rejects_identity_center_import_without_any_profile_arn() {
     let dir = TempDir::new().unwrap();
     let path = identity_center_cli_database(&dir, IDENTITY_CENTER_TOKEN, None);
