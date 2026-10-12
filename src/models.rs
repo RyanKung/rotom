@@ -537,8 +537,9 @@ mod tests {
             ..AppConfig::default()
         };
 
-        assert!(
-            resolve_model_ids_for_provider_with_config(Provider::Kiro, Some(&config)).is_empty()
+        assert_eq!(
+            resolve_model_ids_for_provider_with_config(Provider::Kiro, Some(&config)),
+            Vec::<String>::new()
         );
     }
 
