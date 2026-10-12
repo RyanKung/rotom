@@ -156,6 +156,9 @@ pub struct AppConfig {
     /// Optional fallback model used for known unsupported Anthropic model ids.
     #[serde(default)]
     pub model_fallback: Option<String>,
+    /// Complete replacement model lists for selected providers. Missing providers use defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub models: BTreeMap<Provider, Vec<String>>,
     /// Default upstream credential provider used by `serve` and `daemon install`.
     #[serde(default)]
     pub provider: Option<Provider>,
@@ -485,6 +488,7 @@ mod tests {
             auth_file: Some(PathBuf::from("/tmp/auth.json")),
             api_key: Some("secret".into()),
             model_fallback: Some("gpt-5.5".into()),
+            models: BTreeMap::from([(Provider::Grok, vec!["grok-custom".into()])]),
             provider: Some(Provider::Codex),
         }
     }
@@ -657,6 +661,25 @@ mod tests {
         store.save(&config).unwrap();
 
         assert_eq!(store.load().unwrap(), Some(config));
+    }
+
+    #[test]
+    fn loads_provider_model_overrides_without_requiring_other_config_fields() {
+        let config = parse_app_config(r#"{"models":{"grok":["grok-new"],"kiro":[]}}"#).unwrap();
+
+        assert_eq!(
+            config.models.get(&Provider::Grok),
+            Some(&vec!["grok-new".into()])
+        );
+        assert_eq!(config.models.get(&Provider::Kiro), Some(&Vec::new()));
+        assert!(!config.models.contains_key(&Provider::Codex));
+    }
+
+    #[test]
+    fn rejects_unknown_provider_in_model_overrides() {
+        let error = parse_app_config(r#"{"models":{"unknown":["model"]}}"#).unwrap_err();
+
+        assert!(error.to_string().contains("unknown variant"));
     }
 
     #[test]

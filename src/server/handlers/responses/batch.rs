@@ -6,9 +6,8 @@ use crate::codex::convert::responses_to_upstream_request;
 use crate::server::handlers::responses::{
     anthropic_responses_request, collect_response_input_items,
 };
-use crate::{Error, models::provider_for_model, server::UpstreamState};
+use crate::{Error, server::AppState};
 use axum::http::{HeaderMap, header::HOST};
-use std::sync::Arc;
 
 pub(in crate::server::handlers) fn build_batch_id() -> String {
     format!(
@@ -31,7 +30,7 @@ pub(in crate::server::handlers) fn batch_results_url(
 
 pub(in crate::server::handlers) async fn run_message_batch_worker(
     batches: crate::server::store::BatchStore,
-    upstreams: Arc<Vec<UpstreamState>>,
+    state: AppState,
     batch_id: String,
     requests: Vec<MessageBatchRequest>,
 ) {
@@ -50,7 +49,7 @@ pub(in crate::server::handlers) async fn run_message_batch_worker(
             return;
         }
 
-        let result = run_message_batch_item(&upstreams, item).await;
+        let result = run_message_batch_item(&state, item).await;
 
         batches
             .update(&batch_id, move |stored| {
@@ -84,29 +83,26 @@ pub(in crate::server::handlers) async fn run_message_batch_worker(
         .await;
 }
 
-async fn run_message_batch_item(
-    upstreams: &[UpstreamState],
-    item: MessageBatchRequest,
-) -> MessageBatchResult {
+async fn run_message_batch_item(state: &AppState, item: MessageBatchRequest) -> MessageBatchResult {
     let custom_id = item.custom_id;
     match anthropic_responses_request(&item.params).and_then(|response_request| {
         collect_response_input_items(&response_request, None)
             .map(|input_items| (response_request, input_items))
     }) {
         Ok((response_request, input_items)) => {
-            run_message_batch_upstream(upstreams, custom_id, response_request, input_items).await
+            run_message_batch_upstream(state, custom_id, response_request, input_items).await
         }
         Err(error) => errored_batch_result(custom_id, &error),
     }
 }
 
 async fn run_message_batch_upstream(
-    upstreams: &[UpstreamState],
+    state: &AppState,
     custom_id: String,
     response_request: crate::openai::types::ResponsesRequest,
     input_items: Vec<serde_json::Value>,
 ) -> MessageBatchResult {
-    let Some(upstream) = upstream_for_model(upstreams, &response_request.model) else {
+    let Some(upstream) = state.upstream_for_model(&response_request.model) else {
         return errored_batch_result(
             custom_id,
             &Error::config(format!(
@@ -142,17 +138,6 @@ fn errored_batch_result(custom_id: String, error: &crate::Error) -> MessageBatch
             error: error_body(error),
         },
     }
-}
-
-fn upstream_for_model<'a>(
-    upstreams: &'a [UpstreamState],
-    model: &str,
-) -> Option<&'a UpstreamState> {
-    let provider = provider_for_model(model)?;
-    upstreams
-        .iter()
-        .find(|upstream| upstream.provider == provider)
-        .or_else(|| upstreams.first())
 }
 
 async fn finalize_canceled_batch(

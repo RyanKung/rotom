@@ -1,4 +1,5 @@
 fn models(provider: Option<String>) -> Result<()> {
+    let config = load_app_config()?;
     let providers = match provider {
         Some(provider) => vec![provider.parse()?],
         None => vec![
@@ -8,15 +9,16 @@ fn models(provider: Option<String>) -> Result<()> {
             Provider::Vercel,
         ],
     };
-    print!("{}", format_models(&providers));
+    print!("{}", format_models(&providers, config.as_ref()));
     Ok(())
 }
 
-fn format_models(providers: &[Provider]) -> String {
+/// Formats the model lists selected by runtime config for each provider.
+fn format_models(providers: &[Provider], config: Option<&AppConfig>) -> String {
     let groups = providers
         .iter()
         .copied()
-        .map(|provider| (provider, provider_model_ids(provider)))
+        .map(|provider| (provider, provider_model_ids(provider, config)))
         .collect::<Vec<_>>();
     format_model_groups(&groups)
 }
@@ -44,8 +46,9 @@ const fn model_provider_label(provider: Provider) -> &'static str {
     }
 }
 
-fn provider_model_ids(provider: Provider) -> Vec<String> {
-    resolve_model_ids_for_provider(provider)
+/// Resolves IDs from a provider's configured replacement or built-in defaults.
+fn provider_model_ids(provider: Provider, config: Option<&AppConfig>) -> Vec<String> {
+    resolve_model_ids_for_provider_with_config(provider, config)
 }
 
 fn model_lines(models: Vec<String>) -> Vec<String> {

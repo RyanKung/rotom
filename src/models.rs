@@ -1,4 +1,8 @@
-use crate::{Result, config::Provider, openai::response::ModelList};
+use crate::{
+    Result,
+    config::{AppConfig, Provider},
+    openai::response::ModelList,
+};
 use std::collections::HashSet;
 
 /// Default OpenAI-compatible model identifiers exposed by the project.
@@ -79,6 +83,22 @@ pub fn resolve_model_ids_for_provider(provider: Provider) -> Vec<String> {
     normalize_model_ids(ids.iter().map(ToString::to_string))
 }
 
+/// Resolves a provider's configured replacement list, or its built-in defaults.
+///
+/// An explicitly configured empty list hides every model for that provider.
+#[must_use]
+pub fn resolve_model_ids_for_provider_with_config(
+    provider: Provider,
+    config: Option<&AppConfig>,
+) -> Vec<String> {
+    config
+        .and_then(|config| config.models.get(&provider))
+        .map_or_else(
+            || resolve_model_ids_for_provider(provider),
+            |ids| normalize_configured_model_ids(provider, ids),
+        )
+}
+
 /// Selects the strongest model identifiers for a provider from an available model list.
 #[must_use]
 pub fn highlight_model_ids_for_provider(provider: Provider, available: &[String]) -> Vec<String> {
@@ -130,9 +150,21 @@ pub fn resolve_model_list() -> Result<ModelList> {
 /// This currently forwards construction through [`ModelList::from_ids`] and is
 /// fallible only to preserve the crate-wide result-based call sites.
 pub fn resolve_model_list_for_provider(provider: Provider) -> Result<ModelList> {
+    resolve_model_list_for_provider_with_config(provider, None)
+}
+
+/// Builds a [`ModelList`] from a provider's configured replacement or defaults.
+///
+/// # Errors
+///
+/// This preserves the result-based model-list API for callers.
+pub fn resolve_model_list_for_provider_with_config(
+    provider: Provider,
+    config: Option<&AppConfig>,
+) -> Result<ModelList> {
     let owner = model_owner(provider);
     Ok(ModelList::from_id_owners(
-        resolve_model_ids_for_provider(provider)
+        resolve_model_ids_for_provider_with_config(provider, config)
             .into_iter()
             .map(|id| (id, owner)),
     ))
@@ -154,11 +186,13 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
     if normalized.starts_with("kiro/") {
         return Some(Provider::Kiro);
     }
-    let normalized = normalized
+    if normalized
         .strip_prefix("xai/")
         .or_else(|| normalized.strip_prefix("grok/"))
-        .or_else(|| normalized.strip_prefix("kiro/"))
-        .unwrap_or(normalized);
+        .is_some_and(|id| !id.is_empty())
+    {
+        return Some(Provider::Grok);
+    }
     if normalized.starts_with("grok-") {
         Some(Provider::Grok)
     } else if normalized == "auto"
@@ -235,6 +269,46 @@ fn normalize_model_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
         .map(|id| id.trim().to_owned())
         .filter(|id| !id.is_empty())
         .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+/// Converts a provider's optional local prefixes into unique advertised model IDs.
+///
+/// The provider key owns each entry. A bare name gains a local prefix only when
+/// normal model-name inference would send it to another provider. De-duplicating
+/// by upstream name lets users list both spelling variants without advertising
+/// the same upstream model twice.
+fn normalize_configured_model_ids(provider: Provider, ids: &[String]) -> Vec<String> {
+    // Accepted local aliases; the first is the spelling added to ambiguous bare IDs.
+    let prefixes: &[&str] = match provider {
+        Provider::Codex => &["openai-codex/"],
+        Provider::Grok => &["xai/", "grok/"],
+        Provider::Kiro => &["kiro/"],
+        Provider::Vercel => &["vercel/"],
+    };
+    // Track names after removing only this provider's local prefix.
+    let mut seen = HashSet::new();
+    ids.iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .filter_map(|id| {
+            // A local prefix is for routing and is never part of the upstream name.
+            let native_id = prefixes
+                .iter()
+                .find_map(|prefix| id.strip_prefix(prefix))
+                .unwrap_or(id);
+            if native_id.is_empty() || !seen.insert(native_id.to_owned()) {
+                return None;
+            }
+            // Preserve explicit spelling, but qualify a bare ID that would route elsewhere.
+            let has_provider_prefix = native_id != id;
+            let inferred_provider = provider_for_model(id);
+            if !has_provider_prefix && inferred_provider != Some(provider) {
+                Some(format!("{}{native_id}", prefixes[0]))
+            } else {
+                Some(id.to_owned())
+            }
+        })
         .collect()
 }
 
@@ -420,6 +494,7 @@ struct ModelRank {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn defaults_to_openclaw_codex_models() {
@@ -430,6 +505,121 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn configured_models_replace_only_the_selected_provider() {
+        let config = AppConfig {
+            models: BTreeMap::from([(
+                Provider::Grok,
+                vec![" grok-new ".into(), "grok-new".into(), String::new()],
+            )]),
+            ..AppConfig::default()
+        };
+
+        assert_eq!(
+            resolve_model_ids_for_provider_with_config(Provider::Grok, Some(&config)),
+            ["grok-new"]
+        );
+        assert_eq!(
+            resolve_model_ids_for_provider_with_config(Provider::Codex, Some(&config)),
+            resolve_model_ids_for_provider(Provider::Codex)
+        );
+        let listed =
+            resolve_model_list_for_provider_with_config(Provider::Grok, Some(&config)).unwrap();
+        assert_eq!(listed.data[0].owned_by, "xai");
+    }
+
+    #[test]
+    fn configured_empty_list_replaces_defaults() {
+        let config = AppConfig {
+            models: BTreeMap::from([(Provider::Kiro, Vec::new())]),
+            ..AppConfig::default()
+        };
+
+        assert_eq!(
+            resolve_model_ids_for_provider_with_config(Provider::Kiro, Some(&config)),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn configured_model_ids_keep_provider_prefixes_in_advertised_lists() {
+        let cases = [
+            (Provider::Codex, "openai-codex/gpt-6-astra"),
+            (Provider::Grok, "xai/grok-4.6"),
+            (Provider::Kiro, "kiro/claude-sonnet-4.6"),
+            (Provider::Vercel, "vercel/openai/gpt-6-astra"),
+        ];
+        let config = AppConfig {
+            models: cases
+                .into_iter()
+                .map(|(provider, id)| (provider, vec![id.to_owned()]))
+                .collect(),
+            ..AppConfig::default()
+        };
+
+        for (provider, id) in cases {
+            assert_eq!(
+                resolve_model_ids_for_provider_with_config(provider, Some(&config)),
+                [id]
+            );
+        }
+    }
+
+    #[test]
+    fn configured_models_accept_optional_provider_prefixes_without_duplicates() {
+        let cases = [
+            (
+                Provider::Codex,
+                vec!["gpt-6-astra", "openai-codex/gpt-6-astra"],
+                vec!["gpt-6-astra"],
+            ),
+            (
+                Provider::Grok,
+                vec!["grok-4.7", "xai/grok-4.7", "grok/grok-4.7"],
+                vec!["grok-4.7"],
+            ),
+            (
+                Provider::Kiro,
+                vec!["gpt-5.6-sol", "kiro/gpt-5.6-sol", "claude-opus-5.5"],
+                vec!["kiro/gpt-5.6-sol", "claude-opus-5.5"],
+            ),
+            (
+                Provider::Vercel,
+                vec!["openai/gpt-6-astra", "vercel/openai/gpt-6-astra"],
+                vec!["openai/gpt-6-astra"],
+            ),
+        ];
+
+        for (provider, ids, expected) in cases {
+            let config = AppConfig {
+                models: BTreeMap::from([(provider, ids.into_iter().map(str::to_owned).collect())]),
+                ..AppConfig::default()
+            };
+            assert_eq!(
+                resolve_model_ids_for_provider_with_config(provider, Some(&config)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn unfamiliar_unprefixed_models_gain_a_routing_prefix_when_needed() {
+        for (provider, expected) in [
+            (Provider::Grok, "xai/custom-model"),
+            (Provider::Kiro, "kiro/custom-model"),
+            (Provider::Vercel, "vercel/custom-model"),
+        ] {
+            let config = AppConfig {
+                models: BTreeMap::from([(provider, vec!["custom-model".into()])]),
+                ..AppConfig::default()
+            };
+            assert_eq!(
+                resolve_model_ids_for_provider_with_config(provider, Some(&config)),
+                [expected]
+            );
+        }
     }
 
     #[test]
@@ -608,6 +798,8 @@ mod tests {
         assert_eq!(provider_for_model("grok-4.6"), Some(Provider::Grok));
         assert_eq!(provider_for_model("xai/grok-4.6"), Some(Provider::Grok));
         assert_eq!(provider_for_model("grok/grok-4.6"), Some(Provider::Grok));
+        assert_eq!(provider_for_model("xai/custom"), Some(Provider::Grok));
+        assert_eq!(provider_for_model("grok/custom"), Some(Provider::Grok));
         assert_eq!(
             provider_for_model("openai-codex/grok-4.3"),
             Some(Provider::Grok)
@@ -620,6 +812,7 @@ mod tests {
         assert_eq!(provider_for_model("gpt-6.1-sol"), Some(Provider::Codex));
         assert_eq!(provider_for_model("kiro/auto"), Some(Provider::Kiro));
         assert_eq!(provider_for_model("kiro/gpt-5.6-sol"), Some(Provider::Kiro));
+        assert_eq!(provider_for_model("kiro/custom"), Some(Provider::Kiro));
         assert_eq!(
             provider_for_model("claude-sonnet-4.5"),
             Some(Provider::Kiro)

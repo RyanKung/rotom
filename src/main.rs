@@ -18,8 +18,8 @@ use rotom::{
     daemon::{self, DaemonInstallOptions},
     logging::{self, LogLevel},
     models::{
-        highlight_model_ids_for_provider, resolve_model_ids_for_provider,
-        resolve_model_list_for_provider,
+        highlight_model_ids_for_provider, resolve_model_ids_for_provider_with_config,
+        resolve_model_list_for_provider_with_config,
     },
     oauth::{
         CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
@@ -235,7 +235,7 @@ enum Command {
     },
     #[command(
         about = "List all available models grouped by provider",
-        long_about = "Print all model identifiers rotom exposes through /v1/models, grouped by upstream provider. Use --provider to list only one provider."
+        long_about = "Print configured model identifiers or built-in defaults, grouped by upstream provider. Use --provider to list only one provider. When Vercel has no configured override, the running server may use a live Gateway model list instead."
     )]
     Models {
         #[arg(
@@ -449,7 +449,7 @@ async fn run(cli: Cli) -> Result<()> {
                     client: CodexClient::new_for_provider(http.clone(), *provider),
                 });
             }
-            let model_list = resolve_model_list_for_upstreams(&upstreams).await?;
+            let model_list = resolve_model_list_for_upstreams(&upstreams, config.as_ref()).await?;
             println!("listening on {}", format_bind_urls(&effective_bind));
             for upstream in &upstreams {
                 spawn_token_expiry_display(upstream.token_manager.clone());
@@ -480,12 +480,19 @@ async fn run(cli: Cli) -> Result<()> {
     }
 }
 
-async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result<ModelList> {
+/// Resolves served model lists, giving explicit config precedence over live discovery.
+async fn resolve_model_list_for_upstreams(
+    upstreams: &[UpstreamState],
+    config: Option<&AppConfig>,
+) -> Result<ModelList> {
     let mut seen = HashSet::new();
     let mut ids = Vec::new();
 
     for upstream in upstreams {
-        let models = if upstream.provider == Provider::Vercel {
+        let models = if config.is_some_and(|config| config.models.contains_key(&upstream.provider))
+        {
+            resolve_model_list_for_provider_with_config(upstream.provider, config)?
+        } else if upstream.provider == Provider::Vercel {
             match upstream.token_manager.credentials().await {
                 Ok(credentials) => match upstream.client.list_vercel_models(&credentials).await {
                     Ok(models) => models,
@@ -494,7 +501,7 @@ async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result
                             error = %error,
                             "falling back to built-in Vercel AI Gateway model list"
                         );
-                        resolve_model_list_for_provider(upstream.provider)?
+                        resolve_model_list_for_provider_with_config(upstream.provider, config)?
                     }
                 },
                 Err(error) => {
@@ -502,11 +509,11 @@ async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result
                         error = %error,
                         "falling back to built-in Vercel AI Gateway model list"
                     );
-                    resolve_model_list_for_provider(upstream.provider)?
+                    resolve_model_list_for_provider_with_config(upstream.provider, config)?
                 }
             }
         } else {
-            resolve_model_list_for_provider(upstream.provider)?
+            resolve_model_list_for_provider_with_config(upstream.provider, config)?
         };
 
         for model in models.data {
@@ -561,6 +568,7 @@ include!("main_models.rs");
 
 /// Fetches token status and renders a human-readable report.
 async fn status(store: AuthStore, provider: Option<String>) -> Result<()> {
+    let config = load_app_config()?;
     let http = Client::new();
     let requested_provider = provider
         .map(|value| value.parse::<Provider>())
@@ -570,7 +578,7 @@ async fn status(store: AuthStore, provider: Option<String>) -> Result<()> {
     println!("{}", rotom_version_line());
     for provider in providers {
         println!();
-        render_provider_status(&store, provider, http.clone()).await;
+        render_provider_status(&store, provider, http.clone(), config.as_ref()).await;
     }
 
     if let Some(base_url) = running_daemon_base_url(&http).await {
@@ -589,7 +597,13 @@ fn rotom_version_line() -> String {
     format!("rotom: {}", env!("CARGO_PKG_VERSION"))
 }
 
-async fn render_provider_status(store: &AuthStore, provider: Provider, http: Client) {
+/// Prints credential state and highlights from the effective provider model list.
+async fn render_provider_status(
+    store: &AuthStore,
+    provider: Provider,
+    http: Client,
+    config: Option<&AppConfig>,
+) {
     let token_manager = TokenManager::new_for_provider(store.clone(), provider, http);
     let snapshot = token_manager.credentials_snapshot().await;
     let credentials = match token_manager.credentials().await {
@@ -604,12 +618,12 @@ async fn render_provider_status(store: &AuthStore, provider: Provider, http: Cli
                 println!("token: unavailable");
                 println!("status: refresh failed");
                 println!("highlight_models:");
-                for line in model_lines(provider_model_ids(provider)) {
+                for line in model_lines(provider_model_ids(provider, config)) {
                     println!("{line}");
                 }
                 return;
             };
-            let models = provider_model_ids(provider);
+            let models = provider_model_ids(provider, config);
             let highlights = highlight_model_ids_for_provider(provider, &models);
             println!("provider: {}", credentials.provider);
             println!(
@@ -624,7 +638,7 @@ async fn render_provider_status(store: &AuthStore, provider: Provider, http: Cli
             return;
         }
     };
-    let models = provider_model_ids(provider);
+    let models = provider_model_ids(provider, config);
     let highlights = highlight_model_ids_for_provider(provider, &models);
     println!("provider: {}", credentials.provider);
     println!("token: {}", token_expiry_message(&credentials));

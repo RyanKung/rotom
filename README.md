@@ -87,6 +87,35 @@ rotom models                      # everything rotom exposes
 rotom models --provider grok      # one provider
 ```
 
+To replace the advertised models for specific providers, add `models` to
+`~/.rotom/config.json`:
+
+```json
+{
+  "models": {
+    "codex": ["openai-codex/gpt-6-astra", "gpt-5.6-sol"],
+    "grok": ["xai/grok-4.7"]
+  }
+}
+```
+
+The config file and `models` field are optional. Each array replaces that
+provider's complete list; providers not named here keep their built-in list.
+An empty array advertises no models for that provider.
+Model IDs may include or omit their local routing prefix (`openai-codex/`,
+`xai/`, `grok/`, `kiro/`, or `vercel/`). The prefix is removed before forwarding
+to that upstream. Rotom keeps the configured spelling when it identifies the
+right provider; otherwise it adds the provider's prefix to the advertised ID.
+For example, Kiro's `gpt-5.6-sol` is listed as `kiro/gpt-5.6-sol` so it does
+not collide with Codex's `gpt-5.6-sol`. Repeating the same model with and
+without its prefix advertises it once. Vercel Gateway IDs such as
+`openai/gpt-6-astra` keep their provider namespace.
+The override affects `rotom models`, `rotom status` highlights, and the served
+`/v1/models` endpoint. For Vercel, an explicit list takes precedence over live
+Gateway discovery. The resulting upstream model IDs must be accepted by that
+provider. Restart a running daemon after editing config.
+Running `rotom config` preserves existing model overrides.
+
 Common ids include `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`,
 `grok-4.7`, Kiro's `claude-opus-5.5` and `kiro/gpt-5.6-sol`, and Vercel AI Gateway
 ids like `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5.5`, or
@@ -276,8 +305,9 @@ quietly drops controls the upstream cannot honor.
 - **Vercel**: uses Vercel AI Gateway's OpenAI-compatible `/v1/responses`
   endpoint with `provider/model` ids for text models, and `/v1/evaluations` for
   Gateway evaluation models like `typesafe-ai/jev`. When serving, rotom fetches
-  the live Gateway `/v1/models` list with the saved Vercel key and falls back to
-  a small built-in list if Gateway is unavailable. Prefix a model with
+  the live Gateway `/v1/models` list with the saved Vercel key unless a Vercel
+  list is configured, and falls back to a small built-in list if Gateway is
+  unavailable. Prefix a model with
   `vercel/` to force Vercel routing when another rotom provider also recognizes
   that model family; rotom strips the prefix before forwarding upstream.
 ## Disclaimer

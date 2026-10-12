@@ -110,6 +110,7 @@ fn configure(store: &AppConfigStore) -> Result<()> {
         auth_file,
         api_key,
         model_fallback,
+        models: existing.models,
         provider: Some(provider),
     };
     store.save(&config)?;

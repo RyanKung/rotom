@@ -702,9 +702,8 @@ pub async fn create_message_batch(
         .await;
 
     let batches = state.batches.clone();
-    let upstreams = state.upstreams.clone();
     tokio::spawn(async move {
-        run_message_batch_worker(batches, upstreams, batch_id, request.requests).await;
+        run_message_batch_worker(batches, state, batch_id, request.requests).await;
     });
     trace_response("messages.batches.create", &batch);
     Json(batch).into_response()
