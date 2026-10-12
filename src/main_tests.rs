@@ -1,12 +1,11 @@
 #[cfg(unix)]
 use super::parse_bind_addresses;
 use super::{
-    AppConfig, Cli, Command, DEFAULT_MODEL_FALLBACK, Ipv4Cidr, bind_from_config,
-    build_update_command, credential_subject, daemon_endpoint_lines, format_bind_addresses,
-    format_login_provider_choice, format_models, new_provider_daemon_restart_hint,
-    parse_bind_hosts, parse_login_provider_choice, resolve_model_fallback,
-    resolve_served_providers, resolve_status_providers, rotom_version_line, token_expiry_message,
-    vercel_credentials,
+    AppConfig, Cli, Command, Ipv4Cidr, bind_from_config, build_update_command, credential_subject,
+    daemon_endpoint_lines, format_bind_addresses, format_login_provider_choice, format_models,
+    new_provider_daemon_restart_hint, parse_bind_hosts, parse_login_provider_choice,
+    resolve_model_fallback, resolve_served_providers, resolve_status_providers, rotom_version_line,
+    token_expiry_message, vercel_credentials,
 };
 use clap::Parser;
 use rotom::config::{AuthStore, Credentials, Provider, now_unix};
@@ -174,7 +173,7 @@ fn builds_update_command_for_specific_version() {
 fn uses_default_model_fallback_when_unset() {
     assert_eq!(
         resolve_model_fallback(None, None),
-        Some(DEFAULT_MODEL_FALLBACK.to_owned())
+        Some("gpt-6-sol".to_owned())
     );
 }
 
@@ -257,10 +256,11 @@ fn save_provider_credentials(store: &AuthStore, provider: Provider) {
 fn formats_models_grouped_by_provider() {
     let output = format_models(&[Provider::Codex, Provider::Grok, Provider::Vercel]);
 
-    assert!(output.contains("OpenAI (codex)\n  gpt-5.1"));
+    assert!(output.contains("OpenAI (codex)\n  gpt-6-astra"));
     assert!(output.contains("  gpt-6-astra\n"));
+    assert!(output.contains("  gpt-6.1-sol\n"));
     assert!(output.contains("  gpt-5.6-sol\n"));
-    assert!(output.contains("Grok (grok)\n  grok-4.6"));
+    assert!(output.contains("Grok (grok)\n  grok-4.7"));
     assert!(output.contains("Vercel AI Gateway (vercel)\n  openai/gpt-6-astra"));
     assert!(output.contains("  typesafe-ai/jev\n"));
     assert!(!output.contains("Kiro (kiro)"));
@@ -281,6 +281,9 @@ fn formats_kiro_models() {
     let output = format_models(&[Provider::Kiro]);
 
     assert!(output.starts_with("Kiro (kiro)\n  auto\n"));
+    assert!(output.contains("  claude-opus-5.5\n"));
+    assert!(output.contains("  claude-sonnet-5.5\n"));
+    assert!(output.contains("  kiro/gpt-5.6-sol\n"));
     assert!(output.contains("  claude-sonnet-4.5\n"));
     assert!(output.contains("  qwen3-coder-next\n"));
 }
@@ -291,7 +294,8 @@ fn formats_vercel_models() {
 
     assert!(output.starts_with("Vercel AI Gateway (vercel)\n"));
     assert!(output.contains("  openai/gpt-6-astra\n"));
-    assert!(output.contains("  anthropic/claude-sonnet-5\n"));
+    assert!(output.contains("  openai/gpt-6.1-sol\n"));
+    assert!(output.contains("  anthropic/claude-sonnet-5.5\n"));
     assert!(output.contains("  typesafe-ai/jev\n"));
 }
 
@@ -388,7 +392,7 @@ fn vercel_credentials_store_static_api_key_without_expiry_message() {
 
     assert_eq!(credentials.provider, Provider::Vercel);
     assert_eq!(credentials.access_token, "gateway-key");
-    assert!(credentials.refresh_token.is_empty());
+    assert_eq!(credentials.refresh_token, "");
     assert_eq!(
         token_expiry_message(&credentials),
         "token does not expire automatically (Vercel credentials)"

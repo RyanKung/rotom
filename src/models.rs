@@ -3,36 +3,45 @@ use std::collections::HashSet;
 
 /// Default OpenAI-compatible model identifiers exposed by the project.
 pub const OPENCLAW_CODEX_MODELS: &[&str] = &[
-    "gpt-5.1",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
-    "gpt-5.2-codex",
-    "gpt-5.3-codex",
-    "gpt-5.3-codex-spark",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.5",
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "gpt-6-astra",
 ];
 
 /// Default Grok model identifiers exposed by the project.
-pub const GROK_MODELS: &[&str] = &["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
+pub const GROK_MODELS: &[&str] = &[
+    "grok-4.7",
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.3",
+    "grok-build-0.1",
+];
 
-/// Default Kiro model identifiers exposed by the local Kiro CLI model list.
+/// Default Kiro model identifiers exposed by the project.
+///
+/// `OpenAI` model ids use the `kiro/` routing prefix to distinguish them from
+/// identically named Codex models. The prefix is removed before forwarding.
 pub const KIRO_MODELS: &[&str] = &[
     "auto",
+    "claude-opus-5.5",
+    "claude-opus-5",
     "claude-opus-4.8",
     "claude-opus-4.7",
     "claude-opus-4.6",
+    "claude-sonnet-5.5",
+    "claude-sonnet-5",
     "claude-sonnet-4.6",
     "claude-opus-4.5",
     "claude-sonnet-4.5",
     "claude-sonnet-4",
     "claude-haiku-4.5",
+    "kiro/gpt-5.6-sol",
+    "kiro/gpt-5.6-terra",
+    "kiro/gpt-5.6-luna",
     "deepseek-3.2",
     "minimax-m2.5",
     "minimax-m2.1",
@@ -43,8 +52,10 @@ pub const KIRO_MODELS: &[&str] = &[
 /// Default Vercel AI Gateway model identifiers exposed by the project.
 pub const VERCEL_MODELS: &[&str] = &[
     "openai/gpt-6-astra",
-    "anthropic/claude-sonnet-5",
-    "anthropic/claude-opus-5",
+    "openai/gpt-6.1-sol",
+    "openai/gpt-6-luna",
+    "anthropic/claude-opus-5.5",
+    "anthropic/claude-sonnet-5.5",
     "typesafe-ai/jev",
 ];
 
@@ -139,6 +150,9 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
     }
     if is_explicit_vercel_model(normalized) || is_gateway_model(normalized) {
         return Some(Provider::Vercel);
+    }
+    if normalized.starts_with("kiro/") {
+        return Some(Provider::Kiro);
     }
     let normalized = normalized
         .strip_prefix("xai/")
@@ -314,11 +328,15 @@ fn codex_family_rank(id: &str) -> Option<u16> {
         return None;
     }
 
-    if id.starts_with("gpt-5.6-sol") {
+    if id.starts_with("gpt-6-astra") {
+        Some(120)
+    } else if id.starts_with("gpt-6.1-sol") {
+        Some(110)
+    } else if id.starts_with("gpt-6-sol") || id.starts_with("gpt-5.6-sol") {
         Some(100)
     } else if id.starts_with("gpt-5.6-terra") {
         Some(95)
-    } else if id.starts_with("gpt-5.6-luna") {
+    } else if id.starts_with("gpt-6-luna") || id.starts_with("gpt-5.6-luna") {
         Some(90)
     } else {
         Some(80)
@@ -328,6 +346,8 @@ fn codex_family_rank(id: &str) -> Option<u16> {
 fn kiro_family_rank(id: &str) -> Option<u16> {
     if id.starts_with("claude-fable-") {
         Some(105)
+    } else if id.starts_with("gpt-5.6-sol") {
+        Some(100)
     } else if id.starts_with("claude-opus-") || id == "opus" {
         Some(95)
     } else if id.starts_with("claude-sonnet-") {
@@ -380,8 +400,10 @@ fn highlight_score(provider: Provider, major: u16, minor: u16, family: u16, effo
             10_000_000 + version_score + u32::from(family) * 10 + u32::from(effort)
         }
         Provider::Kiro => u32::from(family) * 1_000 + u32::from(major) * 10 + u32::from(minor),
-        Provider::Codex | Provider::Grok | Provider::Vercel => {
-            version_score + u32::from(family) * 10 + u32::from(effort)
+        Provider::Grok => version_score + u32::from(family) * 10 + u32::from(effort),
+        // Family strength keeps Astra ahead of Sol despite Sol's newer minor version.
+        Provider::Codex | Provider::Vercel => {
+            version_score + u32::from(family) * 200 + u32::from(effort)
         }
     }
 }
@@ -415,9 +437,14 @@ mod tests {
         let ids = resolve_model_ids();
 
         assert!(ids.iter().any(|id| id == "gpt-6-astra"));
+        assert!(ids.iter().any(|id| id == "gpt-6.1-sol"));
+        assert!(ids.iter().any(|id| id == "gpt-6-sol"));
+        assert!(ids.iter().any(|id| id == "gpt-6-luna"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-sol"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-terra"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-luna"));
+        assert!(!ids.iter().any(|id| id.starts_with("gpt-5.1")));
+        assert!(!ids.iter().any(|id| id.starts_with("gpt-5.4")));
         assert!(!ids.iter().any(|id| id == "gpt-5.6"));
         assert!(!ids.iter().any(|id| id == "gpt-5.6-mini"));
     }
@@ -429,6 +456,7 @@ mod tests {
         assert_eq!(
             ids,
             vec![
+                "grok-4.7".to_owned(),
                 "grok-4.6".to_owned(),
                 "grok-4.5".to_owned(),
                 "grok-4.3".to_owned(),
@@ -445,10 +473,10 @@ mod tests {
         assert_eq!(
             highlight_model_ids_for_provider(Provider::Grok, &ids),
             vec![
+                "grok-4.7".to_owned(),
                 "grok-4.6".to_owned(),
                 "grok-4.5".to_owned(),
                 "grok-4.3".to_owned(),
-                "grok-build-0.1".to_owned(),
             ]
         );
     }
@@ -458,8 +486,11 @@ mod tests {
         let ids = resolve_model_ids_for_provider(Provider::Kiro);
 
         assert!(ids.iter().any(|id| id == "auto"));
+        assert!(ids.iter().any(|id| id == "claude-opus-5.5"));
         assert!(ids.iter().any(|id| id == "claude-opus-4.8"));
+        assert!(ids.iter().any(|id| id == "claude-sonnet-5.5"));
         assert!(ids.iter().any(|id| id == "claude-sonnet-4.5"));
+        assert!(ids.iter().any(|id| id == "kiro/gpt-5.6-sol"));
         assert!(ids.iter().any(|id| id == "qwen3-coder-next"));
     }
 
@@ -471,8 +502,10 @@ mod tests {
             ids,
             vec![
                 "openai/gpt-6-astra".to_owned(),
-                "anthropic/claude-sonnet-5".to_owned(),
-                "anthropic/claude-opus-5".to_owned(),
+                "openai/gpt-6.1-sol".to_owned(),
+                "openai/gpt-6-luna".to_owned(),
+                "anthropic/claude-opus-5.5".to_owned(),
+                "anthropic/claude-sonnet-5.5".to_owned(),
                 "typesafe-ai/jev".to_owned(),
             ]
         );
@@ -486,9 +519,9 @@ mod tests {
             highlight_model_ids_for_provider(Provider::Codex, &ids),
             vec![
                 "gpt-6-astra".to_owned(),
-                "gpt-5.6-sol".to_owned(),
-                "gpt-5.6-terra".to_owned(),
-                "gpt-5.6-luna".to_owned(),
+                "gpt-6.1-sol".to_owned(),
+                "gpt-6-sol".to_owned(),
+                "gpt-6-luna".to_owned(),
             ]
         );
     }
@@ -520,6 +553,21 @@ mod tests {
     }
 
     #[test]
+    fn highlights_kiro_gpt_sol_with_current_claude_models() {
+        let ids = resolve_model_ids_for_provider(Provider::Kiro);
+
+        assert_eq!(
+            highlight_model_ids_for_provider(Provider::Kiro, &ids),
+            vec![
+                "kiro/gpt-5.6-sol".to_owned(),
+                "claude-opus-5.5".to_owned(),
+                "claude-sonnet-5.5".to_owned(),
+                "claude-opus-5".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn highlights_vercel_gateway_models_by_underlying_family() {
         let ids = resolve_model_ids_for_provider(Provider::Vercel);
 
@@ -527,8 +575,9 @@ mod tests {
             highlight_model_ids_for_provider(Provider::Vercel, &ids),
             vec![
                 "openai/gpt-6-astra".to_owned(),
-                "anthropic/claude-opus-5".to_owned(),
-                "anthropic/claude-sonnet-5".to_owned(),
+                "openai/gpt-6.1-sol".to_owned(),
+                "openai/gpt-6-luna".to_owned(),
+                "anthropic/claude-opus-5.5".to_owned(),
             ]
         );
     }
@@ -568,7 +617,9 @@ mod tests {
             Some(Provider::Codex)
         );
         assert_eq!(provider_for_model("gpt-6-astra"), Some(Provider::Codex));
+        assert_eq!(provider_for_model("gpt-6.1-sol"), Some(Provider::Codex));
         assert_eq!(provider_for_model("kiro/auto"), Some(Provider::Kiro));
+        assert_eq!(provider_for_model("kiro/gpt-5.6-sol"), Some(Provider::Kiro));
         assert_eq!(
             provider_for_model("claude-sonnet-4.5"),
             Some(Provider::Kiro)
@@ -582,7 +633,7 @@ mod tests {
             Some(Provider::Vercel)
         );
         assert_eq!(
-            provider_for_model("anthropic/claude-sonnet-5"),
+            provider_for_model("anthropic/claude-sonnet-5.5"),
             Some(Provider::Vercel)
         );
         assert_eq!(
@@ -620,6 +671,7 @@ mod tests {
         assert_eq!(owner_for("gpt-6-astra"), Some("openai-codex"));
         assert_eq!(owner_for("grok-4.6"), Some("xai"));
         assert_eq!(owner_for("auto"), Some("kiro"));
+        assert_eq!(owner_for("kiro/gpt-5.6-sol"), Some("kiro"));
         let models = resolve_model_list_for_provider(Provider::Vercel).unwrap();
         assert_eq!(models.data[0].owned_by, "vercel-ai-gateway");
     }

@@ -45,6 +45,18 @@ fn builds_kiro_payload_from_responses_body() {
 }
 
 #[test]
+fn strips_kiro_prefix_from_openai_model_before_forwarding() {
+    let request = json!({"model": "kiro/gpt-5.6-sol", "input": "hello"});
+
+    let payload = to_kiro_payload(&request, &credentials()).unwrap();
+
+    assert_eq!(
+        payload["conversationState"]["currentMessage"]["userInputMessage"]["modelId"],
+        "gpt-5.6-sol"
+    );
+}
+
+#[test]
 fn builds_kiro_payload_from_openai_responses_string_input() {
     let request = json!({
         "model": "auto",
@@ -267,15 +279,13 @@ fn maps_kiro_tool_events_to_responses_function_call() {
     let request = json!({"model": "claude-sonnet-4.5", "input": "use lookup"});
     let mut state = KiroStreamState::new(request);
 
-    assert!(
-        state
-            .apply_payload(&json!({"name": "lookup", "input": {}, "toolUseId": "call_1"}))
-            .is_empty()
+    assert_eq!(
+        state.apply_payload(&json!({"name": "lookup", "input": {}, "toolUseId": "call_1"})),
+        Vec::<JsonSseEvent>::new()
     );
-    assert!(
-        state
-            .apply_payload(&json!({"input": "{\"q\":\"x\"}"}))
-            .is_empty()
+    assert_eq!(
+        state.apply_payload(&json!({"input": "{\"q\":\"x\"}"})),
+        Vec::<JsonSseEvent>::new()
     );
     let events = state.apply_payload(&json!({"stop": true}));
 
