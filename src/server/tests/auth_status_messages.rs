@@ -117,7 +117,7 @@ async fn status_returns_account_and_rate_limit_snapshot() {
     assert!(value["rate_limits"][0]["reset_at_local"].is_string());
     assert!(value["rate_limits"][0]["reset_in_seconds"].is_number());
     assert!(value["token"]["expires_at_local"].is_string());
-    assert!(value["warnings"].as_array().unwrap().is_empty());
+    assert_eq!(value["warnings"], json!([]));
 }
 
 #[tokio::test]
@@ -156,7 +156,7 @@ async fn status_returns_authenticated_snapshot_for_unsupported_provider() {
     assert_eq!(value["provider"], "grok");
     assert!(value["token"]["remaining_seconds"].is_number());
     assert!(value["account"].is_null());
-    assert!(value["rate_limits"].as_array().unwrap().is_empty());
+    assert_eq!(value["rate_limits"], json!([]));
     assert_eq!(
         value["warnings"].as_array().unwrap(),
         &[

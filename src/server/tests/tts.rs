@@ -383,7 +383,7 @@ async fn grok_tts_route_enforces_local_api_key_before_upstream() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(captured.lock().await.requests.is_empty());
+    assert_eq!(captured.lock().await.requests, Vec::<Value>::new());
 }
 
 #[tokio::test]
@@ -598,7 +598,10 @@ async fn grok_tts_websocket_enforces_local_api_key_before_upstream() {
         panic!("expected HTTP handshake error");
     };
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(captured.lock().await.websocket_queries.is_empty());
+    assert_eq!(
+        captured.lock().await.websocket_queries,
+        Vec::<String>::new()
+    );
 }
 
 #[tokio::test]

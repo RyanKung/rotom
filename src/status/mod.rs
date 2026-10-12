@@ -145,7 +145,7 @@ mod tests {
         let client = StatusClient::new(Client::new(), base_url);
         let snapshot = client.fetch_status(&sample_credentials()).await;
 
-        assert!(snapshot.warnings.is_empty());
+        assert_eq!(snapshot.warnings, Vec::<String>::new());
         assert_eq!(
             snapshot.account.unwrap().plan.as_deref(),
             Some("chatgptplus")

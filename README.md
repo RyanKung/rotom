@@ -87,13 +87,15 @@ rotom models                      # everything rotom exposes
 rotom models --provider grok      # one provider
 ```
 
-Common ids include `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`,
-`gpt-5.6-luna`, `grok-4.6`, Kiro's `claude-*` family, and Vercel AI Gateway
-ids like `openai/gpt-6-astra`, `anthropic/claude-sonnet-5`, or
+Common ids include `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`,
+`grok-4.7`, Kiro's `claude-opus-5.5` and `kiro/gpt-5.6-sol`, and Vercel AI Gateway
+ids like `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5.5`, or
 `typesafe-ai/jev`.
 
+Model availability depends on your upstream account and its rollout.
+
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
-(default `gpt-5.5`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
+(default `gpt-6-sol`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
 
 ## Use With SDKs
 

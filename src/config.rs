@@ -576,7 +576,7 @@ mod tests {
         .unwrap();
         let store = AuthStore::new(path);
 
-        assert!(store.load_all().unwrap().is_empty());
+        assert_eq!(store.load_all().unwrap(), Vec::<Credentials>::new());
         assert_eq!(store.load().unwrap(), None);
     }
 
@@ -597,7 +597,7 @@ mod tests {
         .unwrap();
         let store = AuthStore::new(path);
 
-        assert!(store.load_all().unwrap().is_empty());
+        assert_eq!(store.load_all().unwrap(), Vec::<Credentials>::new());
         assert_eq!(store.load().unwrap(), None);
     }
 

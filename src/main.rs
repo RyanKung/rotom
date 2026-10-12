@@ -49,7 +49,7 @@ use prompt::{
 
 const INTERACTIVE_TOKEN_STATUS_INTERVAL: Duration = Duration::from_secs(1);
 const LOG_TOKEN_STATUS_INTERVAL: Duration = Duration::from_secs(60);
-const DEFAULT_MODEL_FALLBACK: &str = "gpt-5.5";
+const DEFAULT_MODEL_FALLBACK: &str = "gpt-6-sol";
 /// Far-future Unix timestamp used for static API-key credentials.
 const STATIC_BEARER_TOKEN_EXPIRY_UNIX: i64 = 4_102_444_800;
 const CLI_LONG_ABOUT: &str = "\

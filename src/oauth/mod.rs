@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(pairs.get("code_challenge_method").unwrap(), "S256");
         assert_eq!(pairs.get("codex_cli_simplified_flow").unwrap(), "true");
         assert_eq!(pairs.get("originator").unwrap(), "pi");
-        assert!(!flow.verifier.is_empty());
+        assert_ne!(flow.verifier, "");
         assert_eq!(flow.state.len(), 32);
     }
 

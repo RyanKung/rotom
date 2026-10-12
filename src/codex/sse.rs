@@ -221,7 +221,10 @@ mod tests {
     fn drains_utf8_frame_split_across_byte_chunks() {
         let mut buffer = b"data: {\"text\":\"".to_vec();
         buffer.extend_from_slice(&[0xE4, 0xBD]);
-        assert!(drain_events_bytes(&mut buffer).unwrap().is_empty());
+        assert_eq!(
+            drain_events_bytes(&mut buffer).unwrap(),
+            Vec::<SseEvent>::new()
+        );
 
         buffer.extend_from_slice(&[0xA0, 0xE5, 0xA5, 0xBD]);
         buffer.extend_from_slice(b"\"}\n\n");

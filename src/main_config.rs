@@ -97,7 +97,7 @@ fn configure(store: &AppConfigStore) -> Result<()> {
     let provider = prompt_string("Provider", existing.provider.unwrap_or_default().as_str())?
         .parse::<Provider>()?;
     let model_fallback = prompt_optional_string(
-        "Fallback model for unsupported Anthropic ids (leave blank for default gpt-5.5)",
+        "Fallback model for unsupported Anthropic ids (leave blank for default gpt-6-sol)",
         existing
             .model_fallback
             .as_deref()
