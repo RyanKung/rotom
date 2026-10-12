@@ -24,7 +24,7 @@ use rotom::{
     oauth::{
         CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
         create_authorization_flow, default_cli_database_path, default_desktop_token_path,
-        kiro_cli_model_ids, parse_kiro_authorization_callback,
+        parse_kiro_authorization_callback,
     },
     openai::response::ModelList,
     server::{AppState, UpstreamState, serve_all},
@@ -505,8 +505,6 @@ async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result
                     resolve_model_list_for_provider(upstream.provider)?
                 }
             }
-        } else if upstream.provider == Provider::Kiro {
-            resolve_kiro_model_list().await?
         } else {
             resolve_model_list_for_provider(upstream.provider)?
         };
@@ -519,32 +517,6 @@ async fn resolve_model_list_for_upstreams(upstreams: &[UpstreamState]) -> Result
     }
 
     Ok(ModelList::from_id_owners(ids))
-}
-
-/// Resolves the Kiro model list from the installed Kiro CLI, falling back to
-/// the built-in list when the CLI is unavailable or returns nothing usable.
-///
-/// The live catalog is fetched by invoking `kiro-cli chat --list-models`, which
-/// keeps rotom's advertised Kiro models aligned with the installed CLI. The
-/// subprocess call runs on a blocking worker so it does not stall the async
-/// runtime.
-async fn resolve_kiro_model_list() -> Result<ModelList> {
-    let fetched = tokio::task::spawn_blocking(kiro_cli_model_ids)
-        .await
-        .map_err(|error| Error::config(format!("Kiro model listing task failed: {error}")));
-
-    match fetched {
-        Ok(Ok(ids)) => Ok(ModelList::from_id_owners(
-            ids.into_iter().map(|id| (id, "kiro")),
-        )),
-        Ok(Err(error)) | Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "falling back to built-in Kiro model list"
-            );
-            resolve_model_list_for_provider(Provider::Kiro)
-        }
-    }
 }
 
 /// Reinstalls rotom from crates.io through Cargo.
