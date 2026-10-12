@@ -573,16 +573,20 @@ fn anthropic_user_block_items(blocks: &[ContentBlock]) -> Vec<Value> {
     for block in blocks {
         if block.kind == "tool_result" {
             flush_raw_message_item(&mut items, "user", &mut parts);
+            // Responses has no is_error field, so carry the failure in tool-visible text.
+            let output = anthropic_tool_result_text(block.content.as_ref());
+            let output = if block.is_error == Some(true) {
+                format!("Error: {output}")
+            } else {
+                output
+            };
             let mut item = json!({
                 "type": "function_call_output",
                 "call_id": block.tool_use_id.clone().unwrap_or_default(),
-                "output": anthropic_tool_result_text(block.content.as_ref()),
+                "output": output,
             });
             if let Some(cache_control) = &block.cache_control {
                 item["cache_control"] = cache_control.clone();
-            }
-            if let Some(is_error) = block.is_error {
-                item["is_error"] = Value::Bool(is_error);
             }
             items.push(item);
         } else if let Some(part) = anthropic_user_content_part(block) {
@@ -975,3 +979,6 @@ mod tests {
         assert_eq!(items[2]["type"], "function_call_output");
     }
 }
+
+#[cfg(test)]
+mod tool_flow_tests;

@@ -29,7 +29,7 @@ fn converts_anthropic_request_to_openai_shape() {
         "lookup"
     );
     assert_eq!(converted.tool_choice, Some(json!("required")));
-    assert_eq!(converted.parallel_tool_calls, Some(false));
+    assert_eq!(converted.parallel_tool_calls, Some(true));
 }
 
 #[test]
@@ -56,7 +56,7 @@ fn accepts_system_role_messages_from_tolerant_clients() {
 }
 
 #[test]
-fn explicit_tool_choice_disables_parallel_tool_calls() {
+fn explicit_tool_choice_allows_parallel_calls_without_opt_out() {
     let request: MessagesRequest = serde_json::from_value(json!({
         "model": "gpt-5.5",
         "messages": [{"role": "user", "content": "hello"}],
@@ -65,7 +65,7 @@ fn explicit_tool_choice_disables_parallel_tool_calls() {
     .unwrap();
 
     let converted = to_openai_request(&request).unwrap();
-    assert_eq!(converted.parallel_tool_calls, Some(false));
+    assert_eq!(converted.parallel_tool_calls, Some(true));
     assert_eq!(
         converted.tool_choice,
         Some(json!({"type": "function", "function": {"name": "lookup"}}))
