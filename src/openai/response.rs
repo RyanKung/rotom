@@ -289,13 +289,32 @@ pub struct DeltaMessage {
 pub struct ToolCallDelta {
     /// Zero-based tool call index within the assistant turn.
     pub index: u32,
-    /// Stable identifier for correlating tool responses.
+    /// Stable identifier on the first delta; empty on argument continuations.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub id: String,
-    /// Tool call type, currently `function`.
-    #[serde(rename = "type")]
+    /// Tool call type on the first delta; empty on argument continuations.
+    #[serde(rename = "type", skip_serializing_if = "str::is_empty")]
     pub kind: &'static str,
-    /// Incremental function call payload.
+    /// Incremental payload; an empty name is omitted from serialized deltas.
+    #[serde(serialize_with = "serialize_function_delta")]
     pub function: FunctionCall,
+}
+
+/// Serializes the streaming function shape without changing complete calls.
+fn serialize_function_delta<S: serde::Serializer>(
+    function: &FunctionCall,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+
+    // A continuation carries arguments only; repeating the name would append it
+    // again in clients that assemble every string field incrementally.
+    let mut fields = serializer.serialize_map(None)?;
+    if !function.name.is_empty() {
+        fields.serialize_entry("name", &function.name)?;
+    }
+    fields.serialize_entry("arguments", &function.arguments)?;
+    fields.end()
 }
 
 impl ModelList {
@@ -592,8 +611,27 @@ pub fn chunk_with_tool_call(
     index: u32,
     tool_call: ToolCall,
 ) -> ChatCompletionChunk {
-    // OpenAI streams tool calls as deltas, so convert the completed tool call
-    // shape into a single incremental entry for this chunk.
+    chunk_with_tool_call_delta(
+        id,
+        created,
+        model,
+        ToolCallDelta {
+            index,
+            id: tool_call.id,
+            kind: "function",
+            function: tool_call.function,
+        },
+    )
+}
+
+/// Builds a chunk carrying a tool introduction or an argument continuation.
+#[must_use]
+pub fn chunk_with_tool_call_delta(
+    id: &str,
+    created: i64,
+    model: &str,
+    delta: ToolCallDelta,
+) -> ChatCompletionChunk {
     ChatCompletionChunk {
         id: id.to_owned(),
         object: "chat.completion.chunk",
@@ -604,12 +642,7 @@ pub fn chunk_with_tool_call(
             delta: DeltaMessage {
                 role: None,
                 content: None,
-                tool_calls: Some(vec![ToolCallDelta {
-                    index,
-                    id: tool_call.id,
-                    kind: "function",
-                    function: tool_call.function,
-                }]),
+                tool_calls: Some(vec![delta]),
             },
             finish_reason: None,
         }],

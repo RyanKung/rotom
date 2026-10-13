@@ -286,6 +286,13 @@ Image generation is exposed both as `POST /v1/images/generations` and as the
 Responses hosted tool `{"type":"image_generation"}`; generated images are
 returned as base64.
 
+Chat Completions streams function-call arguments as upstream fragments arrive.
+The first tool delta identifies the call; subsequent deltas carry the same tool
+index and only new argument text. Final snapshots fill any missing suffix without
+repeating streamed arguments. Providers that return only complete calls remain
+supported. The local Responses compatibility path preserves these incremental
+arguments and stores the assembled calls for replay.
+
 ## Provider Notes
 
 These upstreams are not all plain model APIs, so rotom adapts requests and
