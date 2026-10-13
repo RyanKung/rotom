@@ -1,13 +1,9 @@
 use crate::{
     Error, Result,
     codex::{
+        chat_stream::chat_chunks,
         convert::to_codex_request,
-        events::{
-            collect_output, collect_response_value, event_error, event_tool_call, finish_reason,
-            is_done_event, normalize_incomplete_result_finish_reason,
-            normalize_incomplete_result_response, response_has_usable_output, response_tool_calls,
-            text_delta,
-        },
+        events::{collect_output, collect_response_value, normalize_incomplete_result_response},
         kiro, sse,
         upstream::{UpstreamProvider, adapter_for_provider},
     },
@@ -15,7 +11,6 @@ use crate::{
     evaluation::{EvaluationRequest, resolve_vercel_evaluation_url, vercel_evaluation_headers},
     openai::response::{
         AssistantMessage, ChatChoice, ChatCompletionChunk, ChatCompletionResponse, ModelList,
-        chunk_finished, chunk_with_content, chunk_with_role, chunk_with_tool_call,
     },
 };
 use futures_util::{Stream, StreamExt};
@@ -225,69 +220,8 @@ impl CodexClient {
         let created = now_unix();
         let model = request.model.clone();
         let response = self.send_chat(&request, credentials).await?;
-        let mut events = Box::pin(sse::json_events(Box::pin(response.bytes_stream())));
-
-        let stream = async_stream::try_stream! {
-            yield chunk_with_role(&id, created, &model);
-            let mut finished = false;
-            let mut tool_call_count = 0_u32;
-            let mut seen_tool_call_ids = std::collections::HashSet::<String>::new();
-            let mut saw_usable_output = false;
-
-            while let Some(event) = events.next().await {
-                let event = event?;
-                if let Some(message) = event_error(&event) {
-                    Err(Error::upstream(message))?;
-                }
-                if let Some(delta) = text_delta(&event) {
-                    if !delta.is_empty() {
-                        saw_usable_output = true;
-                        yield chunk_with_content(&id, created, &model, delta);
-                    }
-                }
-                if let Some(tool_call) = event_tool_call(&event) {
-                    if seen_tool_call_ids.insert(tool_call.id.clone()) {
-                        // The SSE stream can repeat tool calls across incremental and completed events.
-                        yield chunk_with_tool_call(&id, created, &model, tool_call_count, tool_call);
-                        tool_call_count += 1;
-                        saw_usable_output = true;
-                    }
-                }
-                if is_done_event(&event) {
-                    // Some tool calls appear only on the terminal completed event.
-                    for tool_call in response_tool_calls(&event) {
-                        if seen_tool_call_ids.insert(tool_call.id.clone()) {
-                            yield chunk_with_tool_call(&id, created, &model, tool_call_count, tool_call);
-                            tool_call_count += 1;
-                            saw_usable_output = true;
-                        }
-                    }
-                    if event
-                        .get("response")
-                        .is_some_and(response_has_usable_output)
-                    {
-                        saw_usable_output = true;
-                    }
-                    finished = true;
-                    let reason = if tool_call_count > 0 {
-                        "tool_calls".to_owned()
-                    } else {
-                        normalize_incomplete_result_finish_reason(
-                            finish_reason(&event),
-                            saw_usable_output,
-                        )
-                    };
-                    yield chunk_finished(&id, created, &model, &reason);
-                    break;
-                }
-            }
-
-            if !finished {
-                yield chunk_finished(&id, created, &model, "stop");
-            }
-        };
-
-        Ok(Box::pin(stream))
+        let events = sse::json_events(Box::pin(response.bytes_stream()));
+        Ok(chat_chunks(events, id, created, model))
     }
 
     /// Sends a non-streaming Responses-style request body and returns the final response envelope.
@@ -610,67 +544,9 @@ impl CodexClient {
         let model = request.model.clone();
         let body = to_codex_request(&request)?;
         let response = self.send_kiro_body(&body, credentials).await?;
-        let mut events = kiro::response_event_stream(response, body);
-
-        let stream = async_stream::try_stream! {
-            yield chunk_with_role(&id, created, &model);
-            let mut finished = false;
-            let mut tool_call_count = 0_u32;
-            let mut seen_tool_call_ids = std::collections::HashSet::<String>::new();
-            let mut saw_usable_output = false;
-
-            while let Some(event) = events.next().await {
-                let event = event?.value;
-                if let Some(message) = event_error(&event) {
-                    Err(Error::upstream(message))?;
-                }
-                if let Some(delta) = text_delta(&event) {
-                    if !delta.is_empty() {
-                        saw_usable_output = true;
-                        yield chunk_with_content(&id, created, &model, delta);
-                    }
-                }
-                if let Some(tool_call) = event_tool_call(&event) {
-                    if seen_tool_call_ids.insert(tool_call.id.clone()) {
-                        yield chunk_with_tool_call(&id, created, &model, tool_call_count, tool_call);
-                        tool_call_count += 1;
-                        saw_usable_output = true;
-                    }
-                }
-                if is_done_event(&event) {
-                    for tool_call in response_tool_calls(&event) {
-                        if seen_tool_call_ids.insert(tool_call.id.clone()) {
-                            yield chunk_with_tool_call(&id, created, &model, tool_call_count, tool_call);
-                            tool_call_count += 1;
-                            saw_usable_output = true;
-                        }
-                    }
-                    if event
-                        .get("response")
-                        .is_some_and(response_has_usable_output)
-                    {
-                        saw_usable_output = true;
-                    }
-                    finished = true;
-                    let reason = if tool_call_count > 0 {
-                        "tool_calls".to_owned()
-                    } else {
-                        normalize_incomplete_result_finish_reason(
-                            finish_reason(&event),
-                            saw_usable_output,
-                        )
-                    };
-                    yield chunk_finished(&id, created, &model, &reason);
-                    break;
-                }
-            }
-
-            if !finished {
-                yield chunk_finished(&id, created, &model, "stop");
-            }
-        };
-
-        Ok(Box::pin(stream))
+        let events =
+            kiro::response_event_stream(response, body).map(|event| event.map(|event| event.value));
+        Ok(chat_chunks(events, id, created, model))
     }
 
     async fn send_body(&self, body: &Value, credentials: &Credentials) -> Result<Response> {

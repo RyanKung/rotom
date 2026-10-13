@@ -1,3 +1,5 @@
+/// Incremental Chat conversion shared by all Responses-style providers.
+mod chat_stream;
 /// Codex API client and transport helpers.
 pub mod client;
 /// Converts OpenAI-style chat payloads into Codex request bodies.
