@@ -17,6 +17,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "main_daemon_tests.rs"]
+mod daemon_defaults;
+#[path = "testsupport.rs"]
+mod testsupport;
+
 struct TestAuthStore {
     store: AuthStore,
     path: PathBuf,

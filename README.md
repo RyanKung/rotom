@@ -241,6 +241,33 @@ macOS uses a LaunchAgent; Linux uses a systemd user unit. On Windows, use WSL.
 The `--api-key` is stored in `~/.rotom/config.json` rather than embedded in the
 service definition.
 
+Without an explicit `--model-fallback` or `ROTOM_MODEL_FALLBACK` at installation,
+the daemon reads `model_fallback` from its runtime config on each start, or uses
+the installed binary's default when the config leaves it unset. After changing
+that config, run `rotom daemon restart`. An explicit installation override stays
+in the service definition and takes precedence over later config changes.
+
+If `ROTOM_HOME` is explicitly set during installation, the service preserves that
+directory in its environment. Relative paths are resolved against the installer's
+working directory. When it is unset, the existing default config and credential
+locations remain unchanged; credential values are never copied into the service.
+
+Older service definitions may have captured an obsolete default such as
+`--model-fallback gpt-5.5`. Updating the binary or restarting the service does not
+remove that argument. After installing a version with this fix, regenerate the
+service without a fallback override to resume runtime config/default selection:
+
+```bash
+env -u ROTOM_MODEL_FALLBACK rotom daemon reinstall --bind 127.0.0.1:14550
+rotom daemon start
+```
+
+Keep any custom `ROTOM_HOME`, bind address, executable, credential path, verbosity,
+or provider options when reinstalling. To retain an intentional model pin, pass its
+`--model-fallback MODEL` again. Reinstall stops the old service; `start` loads the
+replacement. On macOS, manually editing the plist requires `rotom daemon stop`
+followed by `rotom daemon start`; `restart` retains launchd's loaded arguments.
+
 ## Other Commands
 
 ```bash
