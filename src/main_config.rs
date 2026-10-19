@@ -25,6 +25,11 @@ fn daemon_command(command: DaemonCommand, verbosity: u8) -> Result<()> {
     }
 }
 
+/// Resolves service settings while preserving the origin of the model fallback.
+///
+/// Only an explicit CLI or environment fallback belongs in the service arguments.
+/// Leaving it absent lets `serve` read the current config or built-in default on
+/// every start, rather than freezing the fallback that existed at installation.
 fn resolve_daemon_install_options(
     options: DaemonInstallCliOptions,
     verbosity: u8,
@@ -44,7 +49,6 @@ fn resolve_daemon_install_options(
         .provider
         .map(|provider| provider.parse::<Provider>())
         .transpose()?;
-    let effective_model_fallback = resolve_model_fallback(options.model_fallback, config.as_ref());
     if let Some(api_key) = explicit_api_key {
         persist_daemon_api_key(&config_store, config, api_key)?;
     }
@@ -54,7 +58,7 @@ fn resolve_daemon_install_options(
         auth_file: effective_auth_file,
         verbosity,
         provider: effective_provider,
-        model_fallback: effective_model_fallback,
+        model_fallback: options.model_fallback,
     })
 }
 

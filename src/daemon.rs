@@ -24,7 +24,9 @@ pub struct DaemonInstallOptions {
     pub verbosity: u8,
     /// Upstream provider passed through to `rotom serve`.
     pub provider: Option<Provider>,
-    /// Optional fallback model passed through to `rotom serve`.
+    /// Explicit CLI or environment fallback passed through to `rotom serve`.
+    ///
+    /// `None` leaves config and built-in fallback resolution to each service start.
     pub model_fallback: Option<String>,
 }
 
@@ -178,6 +180,7 @@ pub fn uninstall() -> Result<()> {
     }
 }
 
+/// Writes a `LaunchAgent` with the installation's config directory in its environment.
 fn install_launchd(options: &DaemonInstallOptions) -> Result<()> {
     let plist = launchd_plist_path()?;
     let parent = plist
@@ -185,15 +188,22 @@ fn install_launchd(options: &DaemonInstallOptions) -> Result<()> {
         .ok_or_else(|| Error::config("launchd plist path has no parent directory"))?;
     fs::create_dir_all(parent)?;
 
+    // Preserve only explicitly configured homes; an unset ROTOM_HOME stays unset.
+    let config_home = explicit_rotom_home()?;
+    // Logs retain the existing default location when no custom home was selected.
     let log_dir = rotom_home()?;
     fs::create_dir_all(&log_dir)?;
-    fs::write(&plist, launchd_plist(options, &log_dir))?;
+    fs::write(
+        &plist,
+        launchd_plist(options, &log_dir, config_home.as_deref()),
+    )?;
     println!("installed {}", plist.display());
     println!("run `rotom daemon start` to start now; launchd will load it on login");
     println!("run `rotom daemon status` to inspect the user service");
     Ok(())
 }
 
+/// Writes a user unit that retains its config directory without shell inheritance.
 fn install_systemd(options: &DaemonInstallOptions) -> Result<()> {
     let unit = systemd_unit_path()?;
     let parent = unit
@@ -201,7 +211,9 @@ fn install_systemd(options: &DaemonInstallOptions) -> Result<()> {
         .ok_or_else(|| Error::config("systemd unit path has no parent directory"))?;
     fs::create_dir_all(parent)?;
 
-    fs::write(&unit, systemd_unit(options))?;
+    // Only the config directory is persisted; credential values remain in files.
+    let config_home = explicit_rotom_home()?;
+    fs::write(&unit, systemd_unit(options, config_home.as_deref())?)?;
     systemctl(["daemon-reload"])?;
     systemctl(["enable", SYSTEMD_UNIT])?;
     println!("installed {}", unit.display());
@@ -305,7 +317,12 @@ fn serve_args(options: &DaemonInstallOptions) -> Vec<String> {
     args
 }
 
-fn launchd_plist(options: &DaemonInstallOptions, log_dir: &Path) -> String {
+/// Serializes arguments and an optional explicit config home into a `LaunchAgent`.
+fn launchd_plist(
+    options: &DaemonInstallOptions,
+    log_dir: &Path,
+    config_home: Option<&Path>,
+) -> String {
     // launchd expects each argument as a distinct XML string entry in
     // `ProgramArguments`, so escape each value before embedding it.
     let args = serve_args(options)
@@ -313,8 +330,16 @@ fn launchd_plist(options: &DaemonInstallOptions, log_dir: &Path) -> String {
         .map(|arg| format!("        <string>{}</string>", xml_escape(&arg)))
         .collect::<Vec<_>>()
         .join("\n");
+    // The log destination remains independent from whether ROTOM_HOME was explicit.
     let stdout = log_dir.join("rotom.out.log");
     let stderr = log_dir.join("rotom.err.log");
+    // Do not synthesize ROTOM_HOME for default installs: auth uses its absence too.
+    let environment = config_home.map_or_else(String::new, |home| {
+        format!(
+            "    <key>EnvironmentVariables</key>\n    <dict>\n        <key>ROTOM_HOME</key>\n        <string>{}</string>\n    </dict>\n",
+            xml_escape(&home.display().to_string())
+        )
+    });
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -327,7 +352,7 @@ fn launchd_plist(options: &DaemonInstallOptions, log_dir: &Path) -> String {
     <array>
 {}
     </array>
-    <key>RunAtLoad</key>
+{environment}    <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
@@ -345,7 +370,8 @@ fn launchd_plist(options: &DaemonInstallOptions, log_dir: &Path) -> String {
     )
 }
 
-fn systemd_unit(options: &DaemonInstallOptions) -> String {
+/// Serializes a user unit while rejecting config paths systemd cannot represent.
+fn systemd_unit(options: &DaemonInstallOptions, config_home: Option<&Path>) -> Result<String> {
     // Quote each argument individually because `ExecStart=` is parsed as a single
     // command line by systemd rather than as a structured argv array.
     let command = serve_args(options)
@@ -353,8 +379,15 @@ fn systemd_unit(options: &DaemonInstallOptions) -> String {
         .map(|arg| systemd_quote(&arg))
         .collect::<Vec<_>>()
         .join(" ");
+    // Environment assignments follow systemd syntax, not shell argument quoting.
+    let environment = config_home
+        .map(systemd_config_home)
+        .transpose()?
+        .map_or_else(String::new, |assignment| {
+            format!("Environment={assignment}\n")
+        });
 
-    format!(
+    Ok(format!(
         r"[Unit]
 Description=rotom OpenAI-compatible Codex OAuth gateway
 After=network-online.target
@@ -362,14 +395,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={command}
+{environment}ExecStart={command}
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
 "
-    )
+    ))
 }
 
 fn launchd_plist_path() -> Result<PathBuf> {
@@ -382,11 +415,40 @@ fn systemd_unit_path() -> Result<PathBuf> {
     Ok(home_dir()?.join(".config/systemd/user").join(SYSTEMD_UNIT))
 }
 
+/// Resolves the application home against the installer's working directory.
+///
+/// Absolute paths preserve directory identity when service managers start in a
+/// different directory. `absolute` does not require the directory to exist.
 fn rotom_home() -> Result<PathBuf> {
-    if let Ok(path) = env::var("ROTOM_HOME") {
-        return Ok(PathBuf::from(path));
+    explicit_rotom_home()?.map_or_else(|| Ok(home_dir()?.join(".rotom")), Ok)
+}
+
+/// Captures only an explicitly selected config directory as an absolute path.
+fn explicit_rotom_home() -> Result<Option<PathBuf>> {
+    env::var("ROTOM_HOME")
+        .ok()
+        .map(|configured| std::path::absolute(configured).map_err(Error::from))
+        .transpose()
+}
+
+/// Quotes a config-home assignment using systemd Environment= rules.
+///
+/// Percent specifiers are escaped; dollar signs remain literal. Control characters
+/// are rejected because systemd does not accept them in environment values.
+fn systemd_config_home(config_home: &Path) -> Result<String> {
+    // Validate UTF-8 before escaping to avoid selecting a different directory.
+    let value = path_str(config_home)?;
+    if value.chars().any(char::is_control) {
+        return Err(Error::config(
+            "ROTOM_HOME must not contain control characters in a systemd service",
+        ));
     }
-    Ok(home_dir()?.join(".rotom"))
+    // Quote the complete assignment, as required when a value contains spaces.
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('%', "%%");
+    Ok(format!("\"ROTOM_HOME={escaped}\""))
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -661,10 +723,15 @@ enum Platform {
 }
 
 #[cfg(test)]
+#[path = "daemon_home_tests.rs"]
+mod home_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn options() -> DaemonInstallOptions {
+    /// Supplies fixed service settings shared by argument and home regression tests.
+    pub(super) fn options() -> DaemonInstallOptions {
         DaemonInstallOptions {
             executable: "/usr/local/bin/rotom".into(),
             bind: "127.0.0.1:14550".into(),
@@ -694,24 +761,50 @@ mod tests {
         );
     }
 
+    /// Omitting an install override must keep both service formats free of a pin.
+    #[test]
+    fn service_definitions_leave_runtime_model_fallback_unset() -> Result<()> {
+        // Keep all other service settings so this isolates the omitted override.
+        let runtime_defaults = DaemonInstallOptions {
+            model_fallback: None,
+            ..options()
+        };
+
+        assert!(
+            !serve_args(&runtime_defaults)
+                .iter()
+                .any(|arg| arg == "--model-fallback")
+        );
+        assert!(
+            !launchd_plist(&runtime_defaults, Path::new("/tmp/rotom"), None)
+                .contains("--model-fallback")
+        );
+        assert!(!systemd_unit(&runtime_defaults, None)?.contains("--model-fallback"));
+        Ok(())
+    }
+
     #[test]
     fn launchd_plist_uses_program_arguments_array() {
-        let plist = launchd_plist(&options(), Path::new("/tmp/rotom"));
+        let plist = launchd_plist(&options(), Path::new("/tmp/rotom"), None);
 
         assert!(plist.contains("<key>ProgramArguments</key>"));
         assert!(plist.contains("<string>/usr/local/bin/rotom</string>"));
         assert!(!plist.contains("local secret"));
+        assert!(!plist.contains("EnvironmentVariables"));
         assert!(plist.contains("<key>KeepAlive</key>"));
     }
 
+    /// Existing argument quoting remains intact alongside the config-home environment.
     #[test]
-    fn systemd_unit_quotes_exec_start_arguments() {
-        let unit = systemd_unit(&options());
+    fn systemd_unit_quotes_exec_start_arguments() -> Result<()> {
+        let unit = systemd_unit(&options(), None)?;
 
         assert!(unit.contains("ExecStart='/usr/local/bin/rotom' 'serve'"));
         assert!(!unit.contains("local secret"));
+        assert!(!unit.contains("Environment="));
         assert!(unit.contains("Restart=always"));
         assert!(unit.contains("WantedBy=default.target"));
+        Ok(())
     }
 
     #[test]
