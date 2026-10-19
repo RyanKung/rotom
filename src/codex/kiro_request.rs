@@ -415,15 +415,19 @@ impl KiroRole {
     }
 }
 
+// Parallel tool calls arrive as one `function_call` item per call, and their
+// outputs as one `function_call_output` item each. Bedrock requires every
+// toolUse of an assistant turn to be answered in the next user turn, so the
+// calls must share one assistant message and the results one user message.
 fn can_merge_adjacent(previous: &KiroMessage, message: &KiroMessage) -> bool {
-    previous.tool_uses.is_empty()
-        && previous.tool_results.is_empty()
-        && message.tool_uses.is_empty()
-        && message.tool_results.is_empty()
+    match message.role {
+        KiroRole::Assistant => true,
+        KiroRole::User => previous.tool_results.is_empty() == message.tool_results.is_empty(),
+    }
 }
 
 fn merge_message(previous: &mut KiroMessage, message: KiroMessage) {
-    if !message.content.trim().is_empty() {
+    if !message.content.trim().is_empty() && message.content != EMPTY_PLACEHOLDER {
         if previous.content.trim().is_empty() || previous.content == EMPTY_PLACEHOLDER {
             previous.content = message.content;
         } else {
