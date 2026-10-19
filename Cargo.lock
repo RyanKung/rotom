@@ -1041,7 +1041,7 @@ dependencies = [
 
 [[package]]
 name = "rotom"
-version = "1.5.16"
+version = "1.5.17"
 dependencies = [
  "async-stream",
  "axum",
