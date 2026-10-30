@@ -18,6 +18,7 @@ use crate::{
     },
 };
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 
 mod events;
 mod types;
@@ -399,13 +400,18 @@ pub fn estimate_input_tokens(request: &MessagesRequest) -> u32 {
 
 /// Builds an Anthropic-compatible models response from the configured model IDs.
 #[must_use]
-pub fn models_response(ids: &[String]) -> ModelsResponse {
+pub fn models_response(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+) -> ModelsResponse {
+    let ids = discovery_model_ids(models, aliases);
     let data = ids
-        .iter()
+        .into_iter()
         .map(|id| ModelInfo {
             created_at: "2026-01-01T00:00:00Z".to_owned(),
-            display_name: anthropic_display_name(id),
-            id: id.clone(),
+            description: "Provided by Rotom".to_owned(),
+            display_name: anthropic_display_name(&id),
+            id,
             kind: "model",
         })
         .collect::<Vec<_>>();
@@ -413,11 +419,58 @@ pub fn models_response(ids: &[String]) -> ModelsResponse {
     let last_id = data.last().map(|model| model.id.clone());
 
     ModelsResponse {
+        object: "list",
         data,
         first_id,
         has_more: false,
         last_id,
     }
+}
+
+/// Adds configured aliases to an OpenAI-compatible model list without
+/// removing the native names.
+#[must_use]
+pub fn model_list_with_aliases(
+    models: &crate::openai::response::ModelList,
+    aliases: &BTreeMap<String, String>,
+) -> crate::openai::response::ModelList {
+    let mut data = models.data.clone();
+    for model in &models.data {
+        for alias in aliases
+            .iter()
+            .filter(|(_, source)| source.as_str() == model.id)
+            .map(|(alias, _)| alias)
+        {
+            data.push(crate::openai::response::ModelObject {
+                id: alias.clone(),
+                object: model.object,
+                owned_by: model.owned_by,
+            });
+        }
+    }
+    crate::openai::response::ModelList {
+        object: models.object,
+        data,
+    }
+}
+
+fn discovery_model_ids(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+) -> Vec<String> {
+    models
+        .iter()
+        .flat_map(|model| {
+            let configured = aliases
+                .iter()
+                .filter(|(_, source)| source.as_str() == model.id)
+                .map(|(alias, _)| alias.clone())
+                .collect::<Vec<_>>();
+            std::iter::once(model.id.clone())
+                .chain(configured)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Builds an Anthropic-compatible list response from stored message batches.

@@ -1,5 +1,83 @@
 use super::*;
 use serde_json::json;
+use std::collections::BTreeMap;
+
+#[test]
+fn model_discovery_uses_raw_ids_without_alias_config() {
+    let response = models_response(
+        &[
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gpt-6-astra".into(),
+                owned_by: "openai-codex",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "grok-4.7".into(),
+                owned_by: "xai",
+            },
+        ],
+        &BTreeMap::new(),
+    );
+    assert_eq!(
+        response
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-6-astra", "grok-4.7"]
+    );
+}
+
+#[test]
+fn model_discovery_keeps_native_ids_and_adds_configured_aliases() {
+    let aliases = BTreeMap::from([
+        ("anthropic/sol".to_owned(), "gpt-6.1-sol".to_owned()),
+        ("anthropic/gr0k".to_owned(), "grok-4.7".to_owned()),
+    ]);
+    let response = models_response(
+        &[
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gpt-6.1-sol".into(),
+                owned_by: "openai-codex",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "grok-4.7".into(),
+                owned_by: "xai",
+            },
+        ],
+        &aliases,
+    );
+    assert_eq!(
+        response
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-6.1-sol", "anthropic/sol", "grok-4.7", "anthropic/gr0k",]
+    );
+}
+
+#[test]
+fn openai_model_list_also_includes_configured_aliases() {
+    let aliases = BTreeMap::from([("alias-sol".to_owned(), "gpt-6.1-sol".to_owned())]);
+    let models = crate::openai::response::ModelList::from_id_owners([(
+        "gpt-6.1-sol".to_owned(),
+        "openai-codex",
+    )]);
+    let listed = model_list_with_aliases(&models, &aliases);
+
+    assert_eq!(
+        listed
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-6.1-sol", "alias-sol"]
+    );
+}
 
 #[test]
 fn converts_anthropic_request_to_openai_shape() {

@@ -228,6 +228,29 @@ async fn models_return_anthropic_shape_when_requested() {
 }
 
 #[tokio::test]
+async fn models_keep_native_ids_for_non_anthropic_clients() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let state = test_state(store, spawn_refresh_server().await, Some("secret".into()));
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("secret"));
+
+    let response = handlers::models(axum::extract::State(state), headers).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let value = serde_json::from_slice::<Value>(&body).unwrap();
+    assert_eq!(value["data"][0]["id"], "gpt-test");
+    assert!(
+        value["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|model| !model["id"].as_str().unwrap().starts_with("claude-"))
+    );
+}
+
+#[tokio::test]
 async fn message_batches_can_be_retrieved_with_results() {
     let dir = TempDir::new().unwrap();
     let store = AuthStore::new(dir.path().join("auth.json"));

@@ -327,6 +327,8 @@ pub struct CountTokensResponse {
 /// Anthropic-compatible models list response.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ModelsResponse {
+    /// List object marker used by gateway model discovery clients.
+    pub object: &'static str,
     /// Listed models.
     pub data: Vec<ModelInfo>,
     /// First model identifier when available.
@@ -344,6 +346,8 @@ pub struct ModelInfo {
     pub created_at: String,
     /// Human-readable model name.
     pub display_name: String,
+    /// Optional gateway-facing description.
+    pub description: String,
     /// Model identifier.
     pub id: String,
     /// Object kind, always `model`.

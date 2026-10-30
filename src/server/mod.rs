@@ -18,7 +18,7 @@ use axum::{
 };
 use futures_util::future::try_join_all;
 use reqwest::Client;
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 mod auth;
@@ -36,6 +36,7 @@ pub struct AppState {
     api_key: Option<Arc<str>>,
     models: ModelList,
     model_fallback: Option<Arc<str>>,
+    model_aliases: Arc<BTreeMap<String, String>>,
     responses: store::ResponseStore,
     batches: store::BatchStore,
 }
@@ -96,6 +97,28 @@ impl AppState {
         models: ModelList,
         model_fallback: Option<String>,
     ) -> Self {
+        Self::new_multi_with_model_fallback_and_aliases(
+            upstreams,
+            api_key,
+            models,
+            model_fallback,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Builds application state with explicit model aliases.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called with an empty upstream list.
+    #[must_use]
+    pub fn new_multi_with_model_fallback_and_aliases(
+        upstreams: Vec<UpstreamState>,
+        api_key: Option<String>,
+        models: ModelList,
+        model_fallback: Option<String>,
+        model_aliases: BTreeMap<String, String>,
+    ) -> Self {
         let codex = upstreams
             .iter()
             .find(|upstream| upstream.provider == Provider::Codex)
@@ -108,6 +131,7 @@ impl AppState {
             api_key: api_key.map(Arc::from),
             models,
             model_fallback: model_fallback.map(Arc::from),
+            model_aliases: Arc::new(model_aliases),
             responses: store::ResponseStore::default(),
             batches: store::BatchStore::default(),
         }
@@ -115,6 +139,9 @@ impl AppState {
 
     /// Rewrites known unsupported Anthropic model ids to the configured fallback.
     pub(crate) fn rewrite_model(&self, model: &mut String) {
+        if let Some(source) = self.model_aliases.get(model) {
+            source.clone_into(model);
+        }
         if provider_for_model(model).is_none() {
             return;
         }
@@ -186,6 +213,14 @@ impl AppState {
             .iter()
             .find(|listed| listed.id == model)
             .or_else(|| {
+                self.models.data.iter().find(|listed| {
+                    listed
+                        .id
+                        .strip_prefix("anthropic/")
+                        .is_some_and(|id| id == model)
+                })
+            })
+            .or_else(|| {
                 let normalized = normalize_model_for_support(model);
                 self.models
                     .data
@@ -229,6 +264,7 @@ fn normalize_model_for_support(model: &str) -> String {
         .or_else(|| normalized.strip_prefix("grok/"))
         .or_else(|| normalized.strip_prefix("kiro/"))
         .or_else(|| normalized.strip_prefix("vercel/"))
+        .or_else(|| normalized.strip_prefix("anthropic/"))
         .unwrap_or(&normalized)
         .to_owned()
 }
