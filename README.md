@@ -118,12 +118,16 @@ Gateway discovery. The resulting upstream model IDs must be accepted by that
 provider. Restart a running daemon after editing config.
 Running `rotom config` preserves existing model overrides.
 
-Common ids include `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`,
-`grok-4.7`, Kiro's `claude-opus-5.5` and `kiro/gpt-5.6-sol`, and Vercel AI Gateway
-ids like `openai/gpt-6.1-sol`, `anthropic/claude-sonnet-5.5`, or
+Common ids include `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`,
+`grok-4.7`, Kiro's `claude-haiku-5.5`, `kiro/kimi-k3`, and `kiro/gpt-5.6-sol`,
+and Vercel AI Gateway ids like `openai/gpt-6.1-terra`,
+`anthropic/claude-fable-5.1`, `google/gemini-4-argon`, `mistral/mistral-large-4`, or
 `typesafe-ai/jev`.
 
-Model availability depends on your upstream account and its rollout.
+Model availability depends on your upstream account and its rollout. In Kiro,
+`claude-fable-5.1` requires Enterprise access and administrator approval; `claude-haiku-5.5` and
+`kiro/kimi-k3` have experimental support on eligible paid plans. See the
+[Kiro model catalog](https://kiro.dev/docs/models/available-models/).
 
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-6-sol`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.

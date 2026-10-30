@@ -265,6 +265,7 @@ fn formats_models_grouped_by_provider() {
     assert!(output.contains("OpenAI (codex)\n  gpt-6-astra"));
     assert!(output.contains("  gpt-6-astra\n"));
     assert!(output.contains("  gpt-6.1-sol\n"));
+    assert!(output.contains("  gpt-6.1-terra\n"));
     assert!(output.contains("  gpt-5.6-sol\n"));
     assert!(output.contains("Grok (grok)\n  grok-4.7"));
     assert!(output.contains("Vercel AI Gateway (vercel)\n  openai/gpt-6-astra"));
@@ -387,6 +388,9 @@ fn formats_kiro_models() {
     let output = format_models(&[Provider::Kiro], None);
 
     assert!(output.starts_with("Kiro (kiro)\n  auto\n"));
+    assert!(output.contains("  claude-fable-5.1\n"));
+    assert!(output.contains("  claude-haiku-5.5\n"));
+    assert!(output.contains("  kiro/kimi-k3\n"));
     assert!(output.contains("  claude-opus-5.5\n"));
     assert!(output.contains("  claude-sonnet-5.5\n"));
     assert!(output.contains("  kiro/gpt-5.6-sol\n"));
@@ -401,7 +405,13 @@ fn formats_vercel_models() {
     assert!(output.starts_with("Vercel AI Gateway (vercel)\n"));
     assert!(output.contains("  openai/gpt-6-astra\n"));
     assert!(output.contains("  openai/gpt-6.1-sol\n"));
+    assert!(output.contains("  openai/gpt-6.1-terra\n"));
+    assert!(output.contains("  openai/gpt-6.1-terra-fast\n"));
     assert!(output.contains("  anthropic/claude-sonnet-5.5\n"));
+    assert!(output.contains("  anthropic/claude-haiku-5.5\n"));
+    assert!(output.contains("  anthropic/claude-fable-5.1\n"));
+    assert!(output.contains("  google/gemini-4-argon\n"));
+    assert!(output.contains("  mistral/mistral-large-4\n"));
     assert!(output.contains("  typesafe-ai/jev\n"));
 }
 

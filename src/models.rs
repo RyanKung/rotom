@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub const OPENCLAW_CODEX_MODELS: &[&str] = &[
     "gpt-6-astra",
     "gpt-6.1-sol",
+    "gpt-6.1-terra",
     "gpt-6-sol",
     "gpt-6-luna",
     "gpt-5.6-sol",
@@ -27,10 +28,11 @@ pub const GROK_MODELS: &[&str] = &[
 
 /// Default Kiro model identifiers exposed by the project.
 ///
-/// `OpenAI` model ids use the `kiro/` routing prefix to distinguish them from
-/// identically named Codex models. The prefix is removed before forwarding.
+/// Model ids that would otherwise route to Codex use the `kiro/` routing prefix.
+/// The prefix is removed before forwarding.
 pub const KIRO_MODELS: &[&str] = &[
     "auto",
+    "claude-fable-5.1",
     "claude-opus-5.5",
     "claude-opus-5",
     "claude-opus-4.8",
@@ -42,10 +44,12 @@ pub const KIRO_MODELS: &[&str] = &[
     "claude-opus-4.5",
     "claude-sonnet-4.5",
     "claude-sonnet-4",
+    "claude-haiku-5.5",
     "claude-haiku-4.5",
     "kiro/gpt-5.6-sol",
     "kiro/gpt-5.6-terra",
     "kiro/gpt-5.6-luna",
+    "kiro/kimi-k3",
     "deepseek-3.2",
     "minimax-m2.5",
     "minimax-m2.1",
@@ -57,9 +61,15 @@ pub const KIRO_MODELS: &[&str] = &[
 pub const VERCEL_MODELS: &[&str] = &[
     "openai/gpt-6-astra",
     "openai/gpt-6.1-sol",
+    "openai/gpt-6.1-terra",
+    "openai/gpt-6.1-terra-fast",
     "openai/gpt-6-luna",
     "anthropic/claude-opus-5.5",
     "anthropic/claude-sonnet-5.5",
+    "anthropic/claude-haiku-5.5",
+    "anthropic/claude-fable-5.1",
+    "google/gemini-4-argon",
+    "mistral/mistral-large-4",
     "typesafe-ai/jev",
 ];
 
@@ -408,7 +418,7 @@ fn codex_family_rank(id: &str) -> Option<u16> {
         Some(110)
     } else if id.starts_with("gpt-6-sol") || id.starts_with("gpt-5.6-sol") {
         Some(100)
-    } else if id.starts_with("gpt-5.6-terra") {
+    } else if id.starts_with("gpt-6.1-terra") || id.starts_with("gpt-5.6-terra") {
         Some(95)
     } else if id.starts_with("gpt-6-luna") || id.starts_with("gpt-5.6-luna") {
         Some(90)
@@ -628,6 +638,7 @@ mod tests {
 
         assert!(ids.iter().any(|id| id == "gpt-6-astra"));
         assert!(ids.iter().any(|id| id == "gpt-6.1-sol"));
+        assert!(ids.iter().any(|id| id == "gpt-6.1-terra"));
         assert!(ids.iter().any(|id| id == "gpt-6-sol"));
         assert!(ids.iter().any(|id| id == "gpt-6-luna"));
         assert!(ids.iter().any(|id| id == "gpt-5.6-sol"));
@@ -676,6 +687,9 @@ mod tests {
         let ids = resolve_model_ids_for_provider(Provider::Kiro);
 
         assert!(ids.iter().any(|id| id == "auto"));
+        assert!(ids.iter().any(|id| id == "claude-fable-5.1"));
+        assert!(ids.iter().any(|id| id == "claude-haiku-5.5"));
+        assert!(ids.iter().any(|id| id == "kiro/kimi-k3"));
         assert!(ids.iter().any(|id| id == "claude-opus-5.5"));
         assert!(ids.iter().any(|id| id == "claude-opus-4.8"));
         assert!(ids.iter().any(|id| id == "claude-sonnet-5.5"));
@@ -693,9 +707,15 @@ mod tests {
             vec![
                 "openai/gpt-6-astra".to_owned(),
                 "openai/gpt-6.1-sol".to_owned(),
+                "openai/gpt-6.1-terra".to_owned(),
+                "openai/gpt-6.1-terra-fast".to_owned(),
                 "openai/gpt-6-luna".to_owned(),
                 "anthropic/claude-opus-5.5".to_owned(),
                 "anthropic/claude-sonnet-5.5".to_owned(),
+                "anthropic/claude-haiku-5.5".to_owned(),
+                "anthropic/claude-fable-5.1".to_owned(),
+                "google/gemini-4-argon".to_owned(),
+                "mistral/mistral-large-4".to_owned(),
                 "typesafe-ai/jev".to_owned(),
             ]
         );
@@ -710,8 +730,8 @@ mod tests {
             vec![
                 "gpt-6-astra".to_owned(),
                 "gpt-6.1-sol".to_owned(),
+                "gpt-6.1-terra".to_owned(),
                 "gpt-6-sol".to_owned(),
-                "gpt-6-luna".to_owned(),
             ]
         );
     }
@@ -752,7 +772,7 @@ mod tests {
                 "kiro/gpt-5.6-sol".to_owned(),
                 "claude-opus-5.5".to_owned(),
                 "claude-sonnet-5.5".to_owned(),
-                "claude-opus-5".to_owned(),
+                "claude-fable-5.1".to_owned(),
             ]
         );
     }
@@ -766,8 +786,8 @@ mod tests {
             vec![
                 "openai/gpt-6-astra".to_owned(),
                 "openai/gpt-6.1-sol".to_owned(),
+                "openai/gpt-6.1-terra".to_owned(),
                 "openai/gpt-6-luna".to_owned(),
-                "anthropic/claude-opus-5.5".to_owned(),
             ]
         );
     }
