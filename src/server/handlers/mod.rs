@@ -242,13 +242,7 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Respon
     match authorize(&headers, state.api_key.as_deref()) {
         Ok(()) => {
             if headers.contains_key("anthropic-version") {
-                let ids = state
-                    .models
-                    .data
-                    .iter()
-                    .map(|model| model.id.clone())
-                    .collect::<Vec<_>>();
-                Json(crate::anthropic::models_response(&ids)).into_response()
+                Json(crate::anthropic::models_response(&state.models.data)).into_response()
             } else {
                 Json(state.models).into_response()
             }

@@ -115,6 +115,17 @@ impl AppState {
 
     /// Rewrites known unsupported Anthropic model ids to the configured fallback.
     pub(crate) fn rewrite_model(&self, model: &mut String) {
+        if let Some(source) = self
+            .models
+            .data
+            .iter()
+            .find(|listed| {
+                crate::anthropic::claude_model_alias(&listed.id, listed.owned_by) == *model
+            })
+            .map(|listed| listed.id.clone())
+        {
+            source.clone_into(model);
+        }
         if provider_for_model(model).is_none() {
             return;
         }
@@ -186,6 +197,14 @@ impl AppState {
             .iter()
             .find(|listed| listed.id == model)
             .or_else(|| {
+                self.models.data.iter().find(|listed| {
+                    listed
+                        .id
+                        .strip_prefix("anthropic/")
+                        .is_some_and(|id| id == model)
+                })
+            })
+            .or_else(|| {
                 let normalized = normalize_model_for_support(model);
                 self.models
                     .data
@@ -229,6 +248,7 @@ fn normalize_model_for_support(model: &str) -> String {
         .or_else(|| normalized.strip_prefix("grok/"))
         .or_else(|| normalized.strip_prefix("kiro/"))
         .or_else(|| normalized.strip_prefix("vercel/"))
+        .or_else(|| normalized.strip_prefix("anthropic/"))
         .unwrap_or(&normalized)
         .to_owned()
 }

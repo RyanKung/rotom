@@ -2,6 +2,27 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn claude_model_aliases_cover_codex_and_grok_models() {
+    assert_eq!(
+        claude_model_alias("gpt-6-astra", "openai-codex"),
+        "claude-openai-gpt-6-astra"
+    );
+    assert_eq!(claude_model_alias("grok-4.7", "xai"), "claude-grok-4.7");
+}
+
+#[test]
+fn claude_model_aliases_preserve_provider_namespaces_for_collisions() {
+    assert_eq!(
+        claude_model_alias("openai/gpt-6-astra", "vercel-ai-gateway"),
+        "claude-vercel-openai-gpt-6-astra"
+    );
+    assert_eq!(
+        claude_model_alias("anthropic/claude-opus-5.5", "vercel-ai-gateway"),
+        "claude-vercel-anthropic-claude-opus-5.5"
+    );
+}
+
+#[test]
 fn converts_anthropic_request_to_openai_shape() {
     let request: MessagesRequest = serde_json::from_value(json!({
             "model": "gpt-5.5",

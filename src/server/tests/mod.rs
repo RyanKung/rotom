@@ -50,6 +50,37 @@ fn model_support_normalization_accepts_provider_prefixes() {
 }
 
 #[test]
+fn claude_aliases_rewrite_to_native_models_but_native_names_remain_valid() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let state = AppState::new(
+        TokenManager::new(
+            store,
+            CodexOAuthClient::new_with_token_url(http.clone(), "http://token.invalid"),
+        ),
+        CodexClient::new(http, "http://codex.invalid"),
+        None,
+        ModelList::from_id_owners([
+            ("gpt-6.1-sol".into(), "openai-codex"),
+            ("openai/gpt-6.1-sol".into(), "vercel-ai-gateway"),
+        ]),
+    );
+
+    let mut claude_alias = "claude-openai-gpt-6.1-sol".to_owned();
+    state.rewrite_model(&mut claude_alias);
+    assert_eq!(claude_alias, "gpt-6.1-sol");
+
+    let mut native = "gpt-6.1-sol".to_owned();
+    state.rewrite_model(&mut native);
+    assert_eq!(native, "gpt-6.1-sol");
+
+    let mut vercel_alias = "claude-vercel-openai-gpt-6.1-sol".to_owned();
+    state.rewrite_model(&mut vercel_alias);
+    assert_eq!(vercel_alias, "openai/gpt-6.1-sol");
+}
+
+#[test]
 fn removed_cursor_models_cannot_fall_back_to_another_upstream() {
     let dir = TempDir::new().unwrap();
     let store = AuthStore::new(dir.path().join("auth.json"));

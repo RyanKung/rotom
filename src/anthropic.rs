@@ -399,13 +399,17 @@ pub fn estimate_input_tokens(request: &MessagesRequest) -> u32 {
 
 /// Builds an Anthropic-compatible models response from the configured model IDs.
 #[must_use]
-pub fn models_response(ids: &[String]) -> ModelsResponse {
-    let data = ids
+pub fn models_response(models: &[crate::openai::response::ModelObject]) -> ModelsResponse {
+    let data = models
         .iter()
+        // Claude Code's Anthropic model picker expects Anthropic-shaped ids
+        // such as `claude-opus-5.5`; the Gateway namespace is an upstream
+        // routing detail and is restored by the Vercel adapter when needed.
+        .map(|model| claude_model_alias(&model.id, model.owned_by))
         .map(|id| ModelInfo {
             created_at: "2026-01-01T00:00:00Z".to_owned(),
-            display_name: anthropic_display_name(id),
-            id: id.clone(),
+            display_name: anthropic_display_name(&id),
+            id,
             kind: "model",
         })
         .collect::<Vec<_>>();
@@ -417,6 +421,27 @@ pub fn models_response(ids: &[String]) -> ModelsResponse {
         first_id,
         has_more: false,
         last_id,
+    }
+}
+
+/// Converts any upstream model id into the Claude Code model namespace.
+///
+/// Provider namespaces stay in the alias when they are needed to keep two
+/// upstream ids distinct. The Anthropic Gateway namespace is omitted because
+/// `anthropic/claude-opus-5.5` is already Claude-shaped.
+pub(crate) fn claude_model_alias(id: &str, owner: &str) -> String {
+    let provider = match owner {
+        "openai-codex" => "openai",
+        "xai" => "grok",
+        "vercel-ai-gateway" => "vercel",
+        "kiro" => "kiro",
+        _ => "provider",
+    };
+    let id = id.strip_prefix("vercel/").unwrap_or(id).replace('/', "-");
+    if provider == "grok" && id.starts_with("grok-") {
+        format!("claude-{id}")
+    } else {
+        format!("claude-{provider}-{id}")
     }
 }
 
