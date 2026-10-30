@@ -89,7 +89,21 @@ impl MessagesRequest {
             .as_ref()
             .and_then(|config| config.get("effort"))
             .and_then(Value::as_str)
-            .and_then(normalize_anthropic_effort)
+            .and_then(|value| {
+                let model = self
+                    .model
+                    .strip_prefix("openai-codex/")
+                    .unwrap_or(&self.model);
+                // Model routing happens before this conversion. GPT-6 supports
+                // a distinct max effort; keep legacy aliases for other models.
+                if value.trim().eq_ignore_ascii_case("max")
+                    && (model.starts_with("gpt-6-") || model.starts_with("gpt-6."))
+                {
+                    Some("max".to_owned())
+                } else {
+                    normalize_anthropic_effort(value)
+                }
+            })
     }
 }
 
