@@ -45,15 +45,23 @@ fn builds_kiro_payload_from_responses_body() {
 }
 
 #[test]
-fn strips_kiro_prefix_from_openai_model_before_forwarding() {
-    let request = json!({"model": "kiro/gpt-5.6-sol", "input": "hello"});
+fn forwards_native_kiro_model_ids_after_stripping_local_prefixes() {
+    for (model, native_id) in [
+        ("kiro/gpt-5.6-sol", "gpt-5.6-sol"),
+        ("kiro/kimi-k3", "kimi-k3"),
+        ("claude-haiku-5.5", "claude-haiku-5.5"),
+        ("claude-fable-5.1", "claude-fable-5.1"),
+    ] {
+        let request = json!({"model": model, "input": "hello"});
 
-    let payload = to_kiro_payload(&request, &credentials()).unwrap();
+        let payload = to_kiro_payload(&request, &credentials()).unwrap();
 
-    assert_eq!(
-        payload["conversationState"]["currentMessage"]["userInputMessage"]["modelId"],
-        "gpt-5.6-sol"
-    );
+        assert_eq!(
+            payload["conversationState"]["currentMessage"]["userInputMessage"]["modelId"],
+            native_id,
+            "model {model} did not retain its native upstream id"
+        );
+    }
 }
 
 #[test]

@@ -107,6 +107,60 @@ fn configured_model_owner_routes_unfamiliar_id_to_its_provider() {
 }
 
 #[test]
+fn current_default_models_keep_their_ids_and_route_to_their_providers() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let providers = [
+        Provider::Codex,
+        Provider::Grok,
+        Provider::Kiro,
+        Provider::Vercel,
+    ];
+    let upstreams = providers
+        .into_iter()
+        .map(|provider| UpstreamState {
+            provider,
+            token_manager: TokenManager::new_for_provider(store.clone(), provider, http.clone()),
+            client: CodexClient::new_for_provider(http.clone(), provider),
+        })
+        .collect();
+    let state = AppState::new_multi_with_model_fallback(
+        upstreams,
+        None,
+        crate::models::resolve_model_list_for_providers(&providers).unwrap(),
+        Some("gpt-6.1-sol".into()),
+    );
+
+    for (id, provider) in [
+        ("gpt-6.1-terra", Provider::Codex),
+        ("claude-haiku-5.5", Provider::Kiro),
+        ("claude-fable-5.1", Provider::Kiro),
+        ("kiro/kimi-k3", Provider::Kiro),
+        ("openai/gpt-6.1-terra", Provider::Vercel),
+        ("openai/gpt-6.1-terra-fast", Provider::Vercel),
+        ("anthropic/claude-haiku-5.5", Provider::Vercel),
+        ("anthropic/claude-fable-5.1", Provider::Vercel),
+        ("google/gemini-4-argon", Provider::Vercel),
+        ("mistral/mistral-large-4", Provider::Vercel),
+    ] {
+        assert!(state.supports_model(id), "model {id} is not advertised");
+        let mut model = id.to_owned();
+
+        state.rewrite_model(&mut model);
+
+        assert_eq!(model, id, "model {id} was replaced by the fallback");
+        assert_eq!(
+            state
+                .upstream_for_model(&model)
+                .map(|upstream| upstream.provider),
+            Some(provider),
+            "model {id} routed to the wrong provider"
+        );
+    }
+}
+
+#[test]
 fn explicit_model_prefixes_route_to_their_provider_when_native_ids_overlap() {
     let dir = TempDir::new().unwrap();
     let store = AuthStore::new(dir.path().join("auth.json"));
