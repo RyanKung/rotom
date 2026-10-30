@@ -242,7 +242,25 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Respon
     match authorize(&headers, state.api_key.as_deref()) {
         Ok(()) => {
             if headers.contains_key("anthropic-version") {
-                Json(crate::anthropic::models_response(&state.models.data)).into_response()
+                let is_desktop = headers
+                    .get("user-agent")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| {
+                        value.contains("Claude/") && !value.contains("claude-code/")
+                    });
+                if is_desktop {
+                    Json(crate::anthropic::desktop_models_response(
+                        &state.models.data,
+                        &state.model_aliases,
+                    ))
+                    .into_response()
+                } else {
+                    Json(crate::anthropic::models_response(
+                        &state.models.data,
+                        &state.model_aliases,
+                    ))
+                    .into_response()
+                }
             } else {
                 Json(state.models).into_response()
             }

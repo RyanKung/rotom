@@ -50,24 +50,35 @@ fn model_support_normalization_accepts_provider_prefixes() {
 }
 
 #[test]
-fn claude_aliases_rewrite_to_native_models_but_native_names_remain_valid() {
+fn configured_aliases_rewrite_to_native_models_but_native_names_remain_valid() {
     let dir = TempDir::new().unwrap();
     let store = AuthStore::new(dir.path().join("auth.json"));
     let http = Client::new();
-    let state = AppState::new(
-        TokenManager::new(
-            store,
-            CodexOAuthClient::new_with_token_url(http.clone(), "http://token.invalid"),
-        ),
-        CodexClient::new(http, "http://codex.invalid"),
+    let state = AppState::new_multi_with_model_fallback_and_aliases(
+        vec![UpstreamState {
+            provider: Provider::Codex,
+            token_manager: TokenManager::new(
+                store,
+                CodexOAuthClient::new_with_token_url(http.clone(), "http://token.invalid"),
+            ),
+            client: CodexClient::new(http, "http://codex.invalid"),
+        }],
         None,
         ModelList::from_id_owners([
             ("gpt-6.1-sol".into(), "openai-codex"),
             ("openai/gpt-6.1-sol".into(), "vercel-ai-gateway"),
         ]),
+        None,
+        std::collections::BTreeMap::from([
+            ("anthropic/sol".to_owned(), "gpt-6.1-sol".to_owned()),
+            (
+                "anthropic/vercel-sol".to_owned(),
+                "openai/gpt-6.1-sol".to_owned(),
+            ),
+        ]),
     );
 
-    let mut claude_alias = "claude-openai-gpt-6.1-sol".to_owned();
+    let mut claude_alias = "anthropic/sol".to_owned();
     state.rewrite_model(&mut claude_alias);
     assert_eq!(claude_alias, "gpt-6.1-sol");
 
@@ -75,7 +86,7 @@ fn claude_aliases_rewrite_to_native_models_but_native_names_remain_valid() {
     state.rewrite_model(&mut native);
     assert_eq!(native, "gpt-6.1-sol");
 
-    let mut vercel_alias = "claude-vercel-openai-gpt-6.1-sol".to_owned();
+    let mut vercel_alias = "anthropic/vercel-sol".to_owned();
     state.rewrite_model(&mut vercel_alias);
     assert_eq!(vercel_alias, "openai/gpt-6.1-sol");
 }

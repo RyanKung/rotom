@@ -114,6 +114,7 @@ fn configure(store: &AppConfigStore) -> Result<()> {
         auth_file,
         api_key,
         model_fallback,
+        model_aliases: existing.model_aliases,
         models: existing.models,
         provider: Some(provider),
     };

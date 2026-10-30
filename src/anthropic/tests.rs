@@ -1,24 +1,62 @@
 use super::*;
 use serde_json::json;
+use std::collections::BTreeMap;
 
 #[test]
-fn claude_model_aliases_cover_codex_and_grok_models() {
-    assert_eq!(
-        claude_model_alias("gpt-6-astra", "openai-codex"),
-        "claude-openai-gpt-6-astra"
+fn model_discovery_uses_raw_ids_without_alias_config() {
+    let response = models_response(
+        &[
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gpt-6-astra".into(),
+                owned_by: "openai-codex",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "grok-4.7".into(),
+                owned_by: "xai",
+            },
+        ],
+        &BTreeMap::new(),
     );
-    assert_eq!(claude_model_alias("grok-4.7", "xai"), "claude-grok-4.7");
+    assert_eq!(
+        response
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-6-astra", "grok-4.7"]
+    );
 }
 
 #[test]
-fn claude_model_aliases_preserve_provider_namespaces_for_collisions() {
-    assert_eq!(
-        claude_model_alias("openai/gpt-6-astra", "vercel-ai-gateway"),
-        "claude-vercel-openai-gpt-6-astra"
+fn model_discovery_uses_only_configured_aliases() {
+    let aliases = BTreeMap::from([
+        ("anthropic/sol".to_owned(), "gpt-6.1-sol".to_owned()),
+        ("anthropic/gr0k".to_owned(), "grok-4.7".to_owned()),
+    ]);
+    let response = models_response(
+        &[
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gpt-6.1-sol".into(),
+                owned_by: "openai-codex",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "grok-4.7".into(),
+                owned_by: "xai",
+            },
+        ],
+        &aliases,
     );
     assert_eq!(
-        claude_model_alias("anthropic/claude-opus-5.5", "vercel-ai-gateway"),
-        "claude-vercel-anthropic-claude-opus-5.5"
+        response
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["anthropic/sol", "anthropic/gr0k"]
     );
 }
 

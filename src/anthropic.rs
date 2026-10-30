@@ -18,6 +18,7 @@ use crate::{
     },
 };
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 
 mod events;
 mod types;
@@ -399,15 +400,16 @@ pub fn estimate_input_tokens(request: &MessagesRequest) -> u32 {
 
 /// Builds an Anthropic-compatible models response from the configured model IDs.
 #[must_use]
-pub fn models_response(models: &[crate::openai::response::ModelObject]) -> ModelsResponse {
-    let data = models
-        .iter()
-        // Claude Code's Anthropic model picker expects Anthropic-shaped ids
-        // such as `claude-opus-5.5`; the Gateway namespace is an upstream
-        // routing detail and is restored by the Vercel adapter when needed.
-        .map(|model| claude_model_alias(&model.id, model.owned_by))
+pub fn models_response(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+) -> ModelsResponse {
+    let ids = discovery_model_ids(models, aliases);
+    let data = ids
+        .into_iter()
         .map(|id| ModelInfo {
             created_at: "2026-01-01T00:00:00Z".to_owned(),
+            description: "Provided by Rotom".to_owned(),
             display_name: anthropic_display_name(&id),
             id,
             kind: "model",
@@ -417,6 +419,7 @@ pub fn models_response(models: &[crate::openai::response::ModelObject]) -> Model
     let last_id = data.last().map(|model| model.id.clone());
 
     ModelsResponse {
+        object: "list",
         data,
         first_id,
         has_more: false,
@@ -424,25 +427,47 @@ pub fn models_response(models: &[crate::openai::response::ModelObject]) -> Model
     }
 }
 
-/// Converts any upstream model id into the Claude Code model namespace.
-///
-/// Provider namespaces stay in the alias when they are needed to keep two
-/// upstream ids distinct. The Anthropic Gateway namespace is omitted because
-/// `anthropic/claude-opus-5.5` is already Claude-shaped.
-pub(crate) fn claude_model_alias(id: &str, owner: &str) -> String {
-    let provider = match owner {
-        "openai-codex" => "openai",
-        "xai" => "grok",
-        "vercel-ai-gateway" => "vercel",
-        "kiro" => "kiro",
-        _ => "provider",
-    };
-    let id = id.strip_prefix("vercel/").unwrap_or(id).replace('/', "-");
-    if provider == "grok" && id.starts_with("grok-") {
-        format!("claude-{id}")
-    } else {
-        format!("claude-{provider}-{id}")
-    }
+/// Builds the reduced model shape used by Claude Desktop's strict gateway
+/// discovery parser. Unlike the public Anthropic list response, Desktop only
+/// accepts the fields it consumes for picker entries.
+#[must_use]
+pub fn desktop_models_response(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    let ids = discovery_model_ids(models, aliases);
+    let data = ids
+        .into_iter()
+        .map(|id| {
+            serde_json::json!({
+                "id": &id,
+                "display_name": anthropic_display_name(&id),
+                "description": "Provided by Rotom",
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({ "data": data })
+}
+
+fn discovery_model_ids(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+) -> Vec<String> {
+    models
+        .iter()
+        .flat_map(|model| {
+            let configured = aliases
+                .iter()
+                .filter(|(_, source)| source.as_str() == model.id)
+                .map(|(alias, _)| alias.clone())
+                .collect::<Vec<_>>();
+            if configured.is_empty() {
+                vec![model.id.clone()]
+            } else {
+                configured
+            }
+        })
+        .collect()
 }
 
 /// Builds an Anthropic-compatible list response from stored message batches.

@@ -123,6 +123,38 @@ Common ids include `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-luna`,
 and Vercel AI Gateway ids like `openai/gpt-6.1-terra`,
 `anthropic/claude-fable-5.1`, `google/gemini-4-argon`, `mistral/mistral-large-4`, or
 `typesafe-ai/jev`.
+Claude-facing model aliases are opt-in through `model_aliases`. Each key is the
+name exposed by model discovery and each value is the native Rotom model ID sent
+upstream. A configured alias is added alongside its source model; both names
+remain usable. For example:
+
+```json
+{
+  "model_aliases": {
+    "anthropic/0penai-6pt-6-1-sol": "gpt-6.1-sol",
+    "anthropic/gr0k-4-7": "grok-4.7",
+    "anthropic/v3rc3l-0penai-6pt-6-1-sol": "openai/gpt-6.1-sol"
+  }
+}
+```
+
+The source value must match a model currently advertised by the corresponding
+provider. If it does not match, that alias is not returned by discovery. Aliases
+are never generated automatically and apply to every `/v1/models` response;
+there is no Claude-specific User-Agent requirement. Restart a running daemon
+after editing `model_aliases`.
+
+To verify the two surfaces independently:
+
+```bash
+# Anthropic-compatible discovery: aliases and native IDs are both returned.
+curl -sS -H 'anthropic-version: 2023-06-01' \
+  -H 'user-agent: claude-code/1.0' \
+  http://127.0.0.1:14550/v1/models
+
+# OpenAI-compatible discovery: aliases and native IDs are both returned.
+curl -sS http://127.0.0.1:14550/v1/models
+```
 
 Model availability depends on your upstream account and its rollout. In Kiro,
 `claude-fable-5.1` requires Enterprise access and administrator approval; `claude-haiku-5.5` and

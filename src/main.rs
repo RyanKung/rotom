@@ -437,12 +437,22 @@ async fn run(cli: Cli) -> Result<()> {
             let effective_model_fallback = resolve_model_fallback(model_fallback, config.as_ref());
             let http = Client::new();
             let store = auth_store(effective_auth_file)?;
+            let explicitly_selected_provider =
+                provider.is_some() || config.as_ref().and_then(|item| item.provider).is_some();
             let providers = resolve_served_providers(&store, provider, config.as_ref())?;
             let mut upstreams = Vec::new();
             for provider in &providers {
                 let token_manager =
                     TokenManager::new_for_provider(store.clone(), *provider, http.clone());
-                token_manager.credentials().await?;
+                if let Err(error) = token_manager.credentials().await {
+                    if explicitly_selected_provider {
+                        return Err(error);
+                    }
+                    eprintln!(
+                        "warning: skipping provider {provider} during multi-provider startup: {error}"
+                    );
+                    continue;
+                }
                 upstreams.push(UpstreamState {
                     provider: *provider,
                     token_manager,
@@ -456,11 +466,14 @@ async fn run(cli: Cli) -> Result<()> {
             }
             serve_all(
                 &effective_bind,
-                AppState::new_multi_with_model_fallback(
+                AppState::new_multi_with_model_fallback_and_aliases(
                     upstreams,
                     effective_api_key,
                     model_list,
                     effective_model_fallback,
+                    config
+                        .as_ref()
+                        .map_or_else(Default::default, |item| item.model_aliases.clone()),
                 ),
             )
             .await

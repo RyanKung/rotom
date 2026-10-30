@@ -159,6 +159,10 @@ pub struct AppConfig {
     /// Optional fallback model used for known unsupported Anthropic model ids.
     #[serde(default)]
     pub model_fallback: Option<String>,
+    /// Optional Anthropic-facing aliases mapped to native upstream model IDs.
+    /// The key is exposed to Claude clients and the value is sent upstream.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_aliases: BTreeMap<String, String>,
     /// Complete replacement model lists for selected providers. Missing providers use defaults.
     #[serde(
         default,
@@ -535,6 +539,7 @@ mod tests {
             auth_file: Some(PathBuf::from("/tmp/auth.json")),
             api_key: Some("secret".into()),
             model_fallback: Some("gpt-5.5".into()),
+            model_aliases: BTreeMap::new(),
             models: BTreeMap::from([(Provider::Grok, vec!["grok-custom".into()])]),
             provider: Some(Provider::Codex),
         }
@@ -720,6 +725,17 @@ mod tests {
         );
         assert_eq!(config.models.get(&Provider::Kiro), Some(&Vec::new()));
         assert!(!config.models.contains_key(&Provider::Codex));
+    }
+
+    #[test]
+    fn loads_model_aliases_without_requiring_other_config_fields() {
+        let config =
+            parse_app_config(r#"{"model_aliases":{"anthropic/sol":"gpt-6.1-sol"}}"#).unwrap();
+
+        assert_eq!(
+            config.model_aliases.get("anthropic/sol"),
+            Some(&"gpt-6.1-sol".to_owned())
+        );
     }
 
     #[test]
