@@ -106,7 +106,11 @@ impl AppState {
         )
     }
 
-    /// Builds application state with explicit Claude-facing model aliases.
+    /// Builds application state with explicit model aliases.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called with an empty upstream list.
     #[must_use]
     pub fn new_multi_with_model_fallback_and_aliases(
         upstreams: Vec<UpstreamState>,
