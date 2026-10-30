@@ -150,6 +150,94 @@ fn builds_kiro_payload_from_openai_chat_history_and_tools() {
 }
 
 #[test]
+fn groups_parallel_tool_calls_and_results_into_single_turns() {
+    let request = json!({
+        "model": "claude-sonnet-4.5",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "read two files"}]
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Reading both."}]
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_a",
+                "name": "read",
+                "arguments": "{\"path\":\"a\"}"
+            },
+            {
+                "type": "function_call",
+                "call_id": "call_b",
+                "name": "read",
+                "arguments": "{\"path\":\"b\"}"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_a",
+                "output": "contents a"
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_b",
+                "output": "contents b"
+            }
+        ]
+    });
+
+    let payload = to_kiro_payload(&request, &credentials()).unwrap();
+    let state = &payload["conversationState"];
+    let history = state["history"].as_array().unwrap();
+
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["userInputMessage"]["content"], "read two files");
+    let assistant = &history[1]["assistantResponseMessage"];
+    assert_eq!(assistant["content"], "Reading both.");
+    let tool_use_ids = assistant["toolUses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["toolUseId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_use_ids, ["call_a", "call_b"]);
+
+    let tool_result_ids = state["currentMessage"]["userInputMessage"]["userInputMessageContext"]
+        ["toolResults"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["toolUseId"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(tool_result_ids, ["call_a", "call_b"]);
+}
+
+#[test]
+fn keeps_user_text_separate_from_tool_results() {
+    let request = json!({
+        "model": "claude-sonnet-4.5",
+        "input": [
+            {"type": "message", "role": "user", "content": "go"},
+            {"type": "function_call", "call_id": "call_a", "name": "read", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_a", "output": "done"},
+            {"type": "message", "role": "user", "content": "next"}
+        ]
+    });
+
+    let payload = to_kiro_payload(&request, &credentials()).unwrap();
+    let state = &payload["conversationState"];
+
+    assert_eq!(
+        state["history"][2]["userInputMessage"]["userInputMessageContext"]["toolResults"][0]["toolUseId"],
+        "call_a"
+    );
+    assert_eq!(state["currentMessage"]["userInputMessage"]["content"], "next");
+}
+
+#[test]
 fn kiro_payload_uses_only_supported_runtime_fields() {
     let request = json!({
         "model": "claude-sonnet-4.5",
