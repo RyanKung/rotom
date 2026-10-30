@@ -30,7 +30,7 @@ fn model_discovery_uses_raw_ids_without_alias_config() {
 }
 
 #[test]
-fn model_discovery_uses_only_configured_aliases() {
+fn model_discovery_keeps_native_ids_and_adds_configured_aliases() {
     let aliases = BTreeMap::from([
         ("anthropic/sol".to_owned(), "gpt-6.1-sol".to_owned()),
         ("anthropic/gr0k".to_owned(), "grok-4.7".to_owned()),
@@ -56,7 +56,26 @@ fn model_discovery_uses_only_configured_aliases() {
             .iter()
             .map(|model| model.id.as_str())
             .collect::<Vec<_>>(),
-        ["anthropic/sol", "anthropic/gr0k"]
+        ["gpt-6.1-sol", "anthropic/sol", "grok-4.7", "anthropic/gr0k",]
+    );
+}
+
+#[test]
+fn openai_model_list_also_includes_configured_aliases() {
+    let aliases = BTreeMap::from([("alias-sol".to_owned(), "gpt-6.1-sol".to_owned())]);
+    let models = crate::openai::response::ModelList::from_id_owners([(
+        "gpt-6.1-sol".to_owned(),
+        "openai-codex",
+    )]);
+    let listed = model_list_with_aliases(&models, &aliases);
+
+    assert_eq!(
+        listed
+            .data
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["gpt-6.1-sol", "alias-sol"]
     );
 }
 

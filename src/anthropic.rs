@@ -427,26 +427,31 @@ pub fn models_response(
     }
 }
 
-/// Builds the reduced model shape used by Claude Desktop's strict gateway
-/// discovery parser. Unlike the public Anthropic list response, Desktop only
-/// accepts the fields it consumes for picker entries.
+/// Adds configured aliases to an OpenAI-compatible model list without
+/// removing the native names.
 #[must_use]
-pub fn desktop_models_response(
-    models: &[crate::openai::response::ModelObject],
+pub fn model_list_with_aliases(
+    models: &crate::openai::response::ModelList,
     aliases: &BTreeMap<String, String>,
-) -> serde_json::Value {
-    let ids = discovery_model_ids(models, aliases);
-    let data = ids
-        .into_iter()
-        .map(|id| {
-            serde_json::json!({
-                "id": &id,
-                "display_name": anthropic_display_name(&id),
-                "description": "Provided by Rotom",
-            })
-        })
-        .collect::<Vec<_>>();
-    serde_json::json!({ "data": data })
+) -> crate::openai::response::ModelList {
+    let mut data = models.data.clone();
+    for model in &models.data {
+        for alias in aliases
+            .iter()
+            .filter(|(_, source)| source.as_str() == model.id)
+            .map(|(alias, _)| alias)
+        {
+            data.push(crate::openai::response::ModelObject {
+                id: alias.clone(),
+                object: model.object,
+                owned_by: model.owned_by,
+            });
+        }
+    }
+    crate::openai::response::ModelList {
+        object: models.object,
+        data,
+    }
 }
 
 fn discovery_model_ids(
@@ -461,11 +466,9 @@ fn discovery_model_ids(
                 .filter(|(_, source)| source.as_str() == model.id)
                 .map(|(alias, _)| alias.clone())
                 .collect::<Vec<_>>();
-            if configured.is_empty() {
-                vec![model.id.clone()]
-            } else {
-                configured
-            }
+            std::iter::once(model.id.clone())
+                .chain(configured)
+                .collect::<Vec<_>>()
         })
         .collect()
 }
