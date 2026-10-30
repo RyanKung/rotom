@@ -116,6 +116,7 @@ fn configure(store: &AppConfigStore) -> Result<()> {
         model_fallback,
         model_aliases: existing.model_aliases,
         models: existing.models,
+        forwards: existing.forwards,
         provider: Some(provider),
     };
     store.save(&config)?;

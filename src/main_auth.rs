@@ -103,7 +103,7 @@ fn resolve_served_providers(
         .into_iter()
         .map(|credentials| credentials.provider)
         .collect::<Vec<_>>();
-    if providers.is_empty() {
+    if providers.is_empty() && config.is_none_or(|item| item.forwards.is_empty()) {
         providers.push(config.and_then(|item| item.provider).unwrap_or_default());
     }
     providers.sort_unstable();

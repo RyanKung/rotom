@@ -170,6 +170,9 @@ pub struct AppConfig {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub models: BTreeMap<Provider, Vec<String>>,
+    /// Transparent third-party services, keyed by their local model namespace.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub forwards: BTreeMap<String, crate::forward::ForwardConfig>,
     /// Default upstream credential provider used by `serve` and `daemon install`.
     #[serde(default)]
     pub provider: Option<Provider>,
@@ -439,6 +442,7 @@ impl AppConfigStore {
     /// Returns an error when the parent directory cannot be created, the JSON
     /// cannot be serialized, or the file cannot be written atomically.
     pub fn save(&self, config: &AppConfig) -> Result<()> {
+        crate::forward::validate_forwards(&config.forwards)?;
         let parent = self
             .path
             .parent()
@@ -475,7 +479,9 @@ fn parse_app_config(raw: &str) -> Result<AppConfig> {
             config.remove("provider");
         }
     }
-    serde_json::from_value(value).map_err(Into::into)
+    let config: AppConfig = serde_json::from_value(value)?;
+    crate::forward::validate_forwards(&config.forwards)?;
+    Ok(config)
 }
 
 /// Returns the current Unix timestamp in seconds.
@@ -540,6 +546,7 @@ mod tests {
             api_key: Some("secret".into()),
             model_fallback: Some("gpt-5.5".into()),
             model_aliases: BTreeMap::new(),
+            forwards: BTreeMap::new(),
             models: BTreeMap::from([(Provider::Grok, vec!["grok-custom".into()])]),
             provider: Some(Provider::Codex),
         }
