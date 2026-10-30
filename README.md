@@ -164,6 +164,44 @@ Model availability depends on your upstream account and its rollout. In Kiro,
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-6-sol`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
 
+### Reasoning Effort
+
+For GPT-6 models on the Codex upstream, Anthropic-compatible requests can set
+`output_config.effort` to `low`, `medium`, `high`, `xhigh`, or `max`.
+`max` is forwarded as a distinct reasoning effort; `extra` and `extra_high`
+remain aliases for `xhigh`. Older models retain the existing `max` to `xhigh`
+mapping.
+
+Claude Desktop's Code tab chooses its visible effort levels from the gateway
+profile's model capabilities. A profile using an older capability template may
+only show Low, Medium, and High even when the upstream supports more levels.
+For a GPT-6.1 Sol gateway profile, merge this `models` section into the profile,
+keeping its existing gateway URL and credential settings:
+
+```json
+{
+  "models": {
+    "discoveryEnabled": false,
+    "list": [{
+      "name": "claude-sol",
+      "labelOverride": "claude-gpt-sol",
+      "behavesAs": "claude-sonnet-5",
+      "maxEffort": "max"
+    }],
+    "alwaysStartWithDefault": true,
+    "defaultEffort": "high"
+  }
+}
+```
+
+Run rotom with `rotom serve --provider codex --model-fallback gpt-6.1-sol`.
+The `claude-sol` alias is routed to that fallback model. `behavesAs` selects
+desktop capabilities; it does not select the upstream model. Apply the profile
+and restart Claude Desktop to show Low, Medium, High, Extra (`xhigh`), and Max
+(`max`), with High as the default. The display label and a model's own
+self-description do not verify routing; inspect rotom's upstream model and
+effort values when diagnosing a connection.
+
 ## Use With SDKs
 
 OpenAI-compatible:
