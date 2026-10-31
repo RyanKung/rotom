@@ -158,8 +158,9 @@ pub fn resolve_model<'a>(
         .then_some((config, upstream_model))
 }
 
-/// Warnings for `model_aliases` that look like forwards but do not resolve.
+/// Warnings for aliases whose target names a configured forward but is not listed.
 ///
+/// Namespaced builtin IDs such as `openai/gpt-6.1-sol` are not treated as forwards.
 /// These never block daemon startup.
 #[must_use]
 pub fn collect_forward_alias_warnings(
@@ -168,7 +169,12 @@ pub fn collect_forward_alias_warnings(
 ) -> Vec<String> {
     aliases
         .iter()
-        .filter(|(_, target)| target.contains('/') && resolve_model(forwards, target).is_none())
+        .filter(|(_, target)| {
+            target
+                .split_once('/')
+                .is_some_and(|(service, _)| forwards.contains_key(service))
+                && resolve_model(forwards, target).is_none()
+        })
         .map(|(alias, target)| {
             format!("model_alias {alias:?} points to unknown forward model {target:?}")
         })
@@ -231,8 +237,11 @@ mod tests {
             ("ok".into(), "deepseek/chat".into()),
             ("bad".into(), "deepseek/nope".into()),
             ("plain".into(), "gpt-6".into()),
+            ("vercel".into(), "openai/gpt-6.1-sol".into()),
         ]);
-        assert_eq!(collect_forward_alias_warnings(&forwards, &aliases).len(), 1);
+        let warnings = collect_forward_alias_warnings(&forwards, &aliases);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("deepseek/nope"));
         assert!(validate_forwards(&forwards).is_ok());
         let mut bad = svc();
         bad.base_url = "file:///tmp".into();
