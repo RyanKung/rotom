@@ -4,7 +4,7 @@ use crate::{
     codex::{client::CodexClient, convert::normalize_model},
     config::Provider,
     error::{Error, Result},
-    forward::{ForwardConfig, model_ids, validate_forwards},
+    forward::{ForwardConfig, model_ids, resolve_model, validate_forwards},
     models::provider_for_model,
     openai::response::ModelList,
     status::StatusClient,
@@ -172,6 +172,19 @@ impl AppState {
                 }
             }
         }
+
+        // Also expose alias keys that point to forward models so they appear in /v1/models
+        for (alias, target) in &model_aliases {
+            if resolve_model(&forwards, target).is_some()
+                && !models.data.iter().any(|listed| listed.id == *alias)
+            {
+                models.data.push(crate::openai::response::ModelObject {
+                    id: alias.clone(),
+                    object: "model",
+                    owned_by: "forward",
+                });
+            }
+        }
         let mut state = Self::new_multi_with_model_fallback_and_aliases(
             upstreams,
             api_key,
@@ -261,13 +274,14 @@ impl AppState {
             .models
             .data
             .iter()
-            .find(|listed| listed.id == model)
+            .find(|listed| listed.id == model && listed.owned_by != "forward")
             .or_else(|| {
                 self.models.data.iter().find(|listed| {
-                    listed
-                        .id
-                        .strip_prefix("anthropic/")
-                        .is_some_and(|id| id == model)
+                    listed.owned_by != "forward"
+                        && listed
+                            .id
+                            .strip_prefix("anthropic/")
+                            .is_some_and(|id| id == model)
                 })
             })
             .or_else(|| {
@@ -275,7 +289,10 @@ impl AppState {
                 self.models
                     .data
                     .iter()
-                    .find(|listed| normalize_model_for_support(&listed.id) == normalized)
+                    .find(|listed| {
+                        listed.owned_by != "forward"
+                            && normalize_model_for_support(&listed.id) == normalized
+                    })
             })?;
         match listed.owned_by {
             "openai-codex" => Some(Provider::Codex),
