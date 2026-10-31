@@ -21,6 +21,8 @@ pub mod daemon;
 pub mod error;
 /// Typed request model for evaluation endpoints.
 pub mod evaluation;
+/// Configured third-party services and transparent model routing.
+pub mod forward;
 /// Logging configuration and helpers.
 pub mod logging;
 /// Model list resolution from the built-in defaults.

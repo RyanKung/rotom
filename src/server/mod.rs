@@ -4,6 +4,7 @@ use crate::{
     codex::{client::CodexClient, convert::normalize_model},
     config::Provider,
     error::{Error, Result},
+    forward::{ForwardConfig, model_ids, resolve_model, validate_forwards},
     models::provider_for_model,
     openai::response::ModelList,
     status::StatusClient,
@@ -22,6 +23,7 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 mod auth;
+mod forward;
 mod handlers;
 mod status_response;
 mod store;
@@ -32,7 +34,9 @@ pub use auth::authorize;
 #[derive(Clone)]
 pub struct AppState {
     upstreams: Arc<Vec<UpstreamState>>,
-    status: StatusClient,
+    status: Option<StatusClient>,
+    forwards: Arc<BTreeMap<String, ForwardConfig>>,
+    forward_http: Client,
     api_key: Option<Arc<str>>,
     models: ModelList,
     model_fallback: Option<Arc<str>>,
@@ -87,9 +91,6 @@ impl AppState {
 
     /// Builds application state from all configured upstream providers.
     ///
-    /// # Panics
-    ///
-    /// Panics when called with an empty upstream list.
     #[must_use]
     pub fn new_multi_with_model_fallback(
         upstreams: Vec<UpstreamState>,
@@ -119,15 +120,18 @@ impl AppState {
         model_fallback: Option<String>,
         model_aliases: BTreeMap<String, String>,
     ) -> Self {
-        let codex = upstreams
+        let status = upstreams
             .iter()
             .find(|upstream| upstream.provider == Provider::Codex)
             .or_else(|| upstreams.first())
-            .expect("at least one upstream provider is required");
-        let status = StatusClient::new(Client::new(), codex.client.base_url().to_owned());
+            .map(|upstream| {
+                StatusClient::new(Client::new(), upstream.client.base_url().to_owned())
+            });
         Self {
             upstreams: Arc::new(upstreams),
             status,
+            forwards: Arc::new(BTreeMap::new()),
+            forward_http: Client::new(),
             api_key: api_key.map(Arc::from),
             models,
             model_fallback: model_fallback.map(Arc::from),
@@ -135,6 +139,65 @@ impl AppState {
             responses: store::ResponseStore::default(),
             batches: store::BatchStore::default(),
         }
+    }
+
+    /// Builds state with providers, forwards, or both.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid forwards, HTTP client setup, or no backends.
+    pub fn new_multi_with_forwards(
+        upstreams: Vec<UpstreamState>,
+        api_key: Option<String>,
+        mut models: ModelList,
+        model_fallback: Option<String>,
+        model_aliases: BTreeMap<String, String>,
+        forwards: BTreeMap<String, ForwardConfig>,
+    ) -> Result<Self> {
+        validate_forwards(&forwards)?;
+        if upstreams.is_empty() && forwards.is_empty() {
+            return Err(Error::config(
+                "no upstream providers or forwards configured",
+            ));
+        }
+        for (name, config) in &forwards {
+            let forwarded = ModelList::from_id_owners(
+                model_ids(name, config)
+                    .into_iter()
+                    .map(|id| (id, "forward")),
+            );
+            for model in forwarded.data {
+                if !models.data.iter().any(|listed| listed.id == model.id) {
+                    models.data.push(model);
+                }
+            }
+        }
+
+        // Also expose alias keys that point to forward models so they appear in /v1/models
+        for (alias, target) in &model_aliases {
+            if resolve_model(&forwards, target).is_some()
+                && !models.data.iter().any(|listed| listed.id == *alias)
+            {
+                models.data.push(crate::openai::response::ModelObject {
+                    id: alias.clone(),
+                    object: "model",
+                    owned_by: "forward",
+                });
+            }
+        }
+        let mut state = Self::new_multi_with_model_fallback_and_aliases(
+            upstreams,
+            api_key,
+            models,
+            model_fallback,
+            model_aliases,
+        );
+        // Forwarding credentials belong to the configured destination only.
+        state.forward_http = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        state.forwards = Arc::new(forwards);
+        Ok(state)
     }
 
     /// Rewrites known unsupported Anthropic model ids to the configured fallback.
@@ -211,21 +274,22 @@ impl AppState {
             .models
             .data
             .iter()
-            .find(|listed| listed.id == model)
+            .find(|listed| listed.id == model && listed.owned_by != "forward")
             .or_else(|| {
                 self.models.data.iter().find(|listed| {
-                    listed
-                        .id
-                        .strip_prefix("anthropic/")
-                        .is_some_and(|id| id == model)
+                    listed.owned_by != "forward"
+                        && listed
+                            .id
+                            .strip_prefix("anthropic/")
+                            .is_some_and(|id| id == model)
                 })
             })
             .or_else(|| {
                 let normalized = normalize_model_for_support(model);
-                self.models
-                    .data
-                    .iter()
-                    .find(|listed| normalize_model_for_support(&listed.id) == normalized)
+                self.models.data.iter().find(|listed| {
+                    listed.owned_by != "forward"
+                        && normalize_model_for_support(&listed.id) == normalized
+                })
             })?;
         match listed.owned_by {
             "openai-codex" => Some(Provider::Codex),
@@ -354,6 +418,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/images/generations", post(handlers::image_generations))
         .route("/v1/tts", get(handlers::tts_websocket).post(handlers::tts))
         .route("/v1/tts/voices", get(handlers::tts_voices))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            forward::middleware,
+        ))
         .layer(middleware::from_fn(log_request_summary))
         .with_state(state)
 }

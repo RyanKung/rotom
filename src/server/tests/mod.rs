@@ -856,6 +856,7 @@ mod batches_and_replay;
 mod chat_tool_streaming;
 mod effort_levels;
 mod evaluations;
+mod forward;
 mod responses_provider_strategy;
 mod responses_resources;
 mod responses_streaming;

@@ -26,9 +26,7 @@ use crate::{
         types::{ChatCompletionRequest, ImageGenerationRequest, ResponsesRequest},
     },
     server::{
-        AppState, UpstreamState,
-        auth::authorize,
-        status_response::{build_status_response, build_unsupported_provider_status_response},
+        AppState, UpstreamState, auth::authorize, status_response::build_runtime_status_response,
     },
 };
 use axum::{
@@ -467,20 +465,10 @@ pub async fn status(State(state): State<AppState>, headers: HeaderMap) -> Respon
         return error.into_response();
     }
 
-    let Some(upstream) = state.default_upstream() else {
-        return Error::config("no upstream providers configured").into_response();
-    };
-    let credentials = match upstream.token_manager.credentials().await {
-        Ok(credentials) => credentials,
-        Err(error) => return error.into_response(),
-    };
-
-    if upstream.provider != crate::config::Provider::Codex {
-        return Json(build_unsupported_provider_status_response(&credentials)).into_response();
+    match build_runtime_status_response(&state).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => error.into_response(),
     }
-
-    let snapshot = state.status.fetch_status(&credentials).await;
-    Json(build_status_response(&credentials, &snapshot)).into_response()
 }
 
 /// Proxies OpenAI-compatible chat completion requests to the Codex backend.

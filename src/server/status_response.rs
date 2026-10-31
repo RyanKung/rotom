@@ -9,6 +9,75 @@ use crate::{
 };
 use serde_json::{Value, json};
 
+/// Reports configured forwards alongside the existing default-provider status.
+pub(super) async fn build_runtime_status_response(state: &super::AppState) -> crate::Result<Value> {
+    let mut payload = match default_provider_status(state).await {
+        Ok(payload) => payload,
+        Err(error) if !state.forwards.is_empty() => json!({
+            "status": "refresh failed",
+            "warnings": [error.to_string()],
+        }),
+        Err(error) => return Err(error),
+    };
+    if !state.forwards.is_empty() {
+        let alias_warnings =
+            crate::forward::collect_forward_alias_warnings(&state.forwards, &state.model_aliases);
+
+        let forwards = state
+            .forwards
+            .iter()
+            .map(|(name, config)| {
+                let models = crate::forward::model_ids(name, config);
+                let aliases = state
+                    .model_aliases
+                    .iter()
+                    .filter(|(_, source)| models.contains(source))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                json!({
+                    "provider": name,
+                    "base_url": config.base_url,
+                    "status": "configured",
+                    "models": models,
+                    "model_aliases": aliases,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("forwards".to_owned(), Value::Array(forwards));
+            if !alias_warnings.is_empty() {
+                let mut warnings = object
+                    .remove("warnings")
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                for w in alias_warnings {
+                    warnings.push(Value::String(w));
+                }
+                object.insert("warnings".to_owned(), Value::Array(warnings));
+            }
+        }
+    }
+    Ok(payload)
+}
+
+async fn default_provider_status(state: &super::AppState) -> crate::Result<Value> {
+    let Some(upstream) = state.default_upstream() else {
+        return if state.forwards.is_empty() {
+            Err(crate::Error::config("no upstream providers configured"))
+        } else {
+            Ok(json!({"status": "configured"}))
+        };
+    };
+    let credentials = upstream.token_manager.credentials().await?;
+    if upstream.provider == crate::config::Provider::Codex {
+        if let Some(status) = &state.status {
+            let snapshot = status.fetch_status(&credentials).await;
+            return Ok(build_status_response(&credentials, &snapshot));
+        }
+    }
+    Ok(build_unsupported_provider_status_response(&credentials))
+}
+
 /// Builds the structured JSON payload returned by the status endpoint.
 pub fn build_status_response(credentials: &Credentials, snapshot: &StatusSnapshot) -> Value {
     let now = crate::config::now_unix();

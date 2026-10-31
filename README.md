@@ -202,6 +202,28 @@ and restart Claude Desktop to show Low, Medium, High, Extra (`xhigh`), and Max
 self-description do not verify routing; inspect rotom's upstream model and
 effort values when diagnosing a connection.
 
+## Forwarding
+
+Add a named service to `forwards` in `~/.rotom/config.json`. Requests keep their original JSON; only `model` is rewritten.
+
+```json
+{
+  "forwards": {
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/anthropic",
+      "api_key": "your-deepseek-api-key",
+      "models": ["deepseek-chat"]
+    }
+  },
+  "model_aliases": {
+    "anthropic/my-deepseek": "deepseek/deepseek-chat"
+  }
+}
+```
+
+Clients call `deepseek/deepseek-chat` or the alias. `rotom status` lists configured forwards. Restart the daemon after editing config. Optional `headers` can set `x-api-key` instead of `api_key`.
+
+
 ## Use With SDKs
 
 OpenAI-compatible:

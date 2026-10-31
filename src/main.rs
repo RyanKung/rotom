@@ -33,6 +33,7 @@ use rotom::{
 };
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     io::{self, IsTerminal, Write},
     net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -220,8 +221,8 @@ enum Command {
         provider: Option<String>,
     },
     #[command(
-        about = "Show provider token status, highlight models, and daemon endpoints",
-        long_about = "Refresh saved credentials if needed, then show token expiry, authentication status, and strongest highlight models for saved providers. When --provider is omitted, reports all saved providers. If the daemon is running, also prints its local API endpoint URLs. Use `rotom models` for full model lists."
+        about = "Show provider status, configured forwards, and daemon endpoints",
+        long_about = "Refresh saved credentials if needed, then show token expiry, authentication status, and strongest highlight models for saved providers. Also shows configured forwarding services, their models, and aliases without probing upstream availability. When --provider is omitted, reports all saved providers and forwards. If the daemon is running, also prints its local API endpoint URLs. Use `rotom models` for full model lists."
     )]
     Status {
         #[arg(long, value_name = "PATH", help = "Credential file to read/write")]
@@ -229,7 +230,7 @@ enum Command {
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to inspect: codex/openai, grok/xai, kiro, or vercel"
+            help = "Provider to inspect: codex/openai, grok/xai, kiro, vercel, or a configured forward name"
         )]
         provider: Option<String>,
     },
@@ -241,7 +242,7 @@ enum Command {
         #[arg(
             long,
             value_name = "PROVIDER",
-            help = "Provider to list: codex/openai, grok/xai, kiro, or vercel"
+            help = "Provider to list: codex/openai, grok/xai, kiro, vercel, or a configured forward name"
         )]
         provider: Option<String>,
     },
@@ -437,8 +438,11 @@ async fn run(cli: Cli) -> Result<()> {
             let effective_model_fallback = resolve_model_fallback(model_fallback, config.as_ref());
             let http = Client::new();
             let store = auth_store(effective_auth_file)?;
-            let explicitly_selected_provider =
-                provider.is_some() || config.as_ref().and_then(|item| item.provider).is_some();
+            let has_forwards = config
+                .as_ref()
+                .is_some_and(|item| !item.forwards.is_empty());
+            let explicitly_selected_provider = provider.is_some()
+                || (!has_forwards && config.as_ref().and_then(|item| item.provider).is_some());
             let providers = resolve_served_providers(&store, provider, config.as_ref())?;
             let mut upstreams = Vec::new();
             for provider in &providers {
@@ -466,7 +470,7 @@ async fn run(cli: Cli) -> Result<()> {
             }
             serve_all(
                 &effective_bind,
-                AppState::new_multi_with_model_fallback_and_aliases(
+                AppState::new_multi_with_forwards(
                     upstreams,
                     effective_api_key,
                     model_list,
@@ -474,7 +478,8 @@ async fn run(cli: Cli) -> Result<()> {
                     config
                         .as_ref()
                         .map_or_else(Default::default, |item| item.model_aliases.clone()),
-                ),
+                    config.map_or_else(Default::default, |item| item.forwards),
+                )?,
             )
             .await
         }
@@ -486,7 +491,7 @@ async fn run(cli: Cli) -> Result<()> {
             auth_file,
             provider,
         } => status(auth_store(auth_file)?, provider).await,
-        Command::Models { provider } => models(provider),
+        Command::Models { provider } => models(provider.as_deref()),
         Command::Kiro { command } => kiro_command(command),
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),
@@ -578,21 +583,24 @@ include!("main_config.rs");
 include!("main_auth.rs");
 
 include!("main_models.rs");
+include!("main_forward.rs");
 
 /// Fetches token status and renders a human-readable report.
 async fn status(store: AuthStore, provider: Option<String>) -> Result<()> {
     let config = load_app_config()?;
     let http = Client::new();
-    let requested_provider = provider
-        .map(|value| value.parse::<Provider>())
-        .transpose()?;
-    let providers = resolve_status_providers(store.load_all()?, requested_provider)?;
+    let providers =
+        resolve_status_selection(store.load_all()?, provider.as_deref(), config.as_ref())?;
 
     println!("{}", rotom_version_line());
     for provider in providers {
         println!();
         render_provider_status(&store, provider, http.clone(), config.as_ref()).await;
     }
+    print!(
+        "{}",
+        format_forward_status(config.as_ref(), provider.as_deref())
+    );
 
     if let Some(base_url) = running_daemon_base_url(&http).await {
         println!();
@@ -1030,3 +1038,7 @@ fn credential_subject(credentials: &Credentials) -> String {
 
 #[cfg(test)]
 mod main_tests;
+
+#[cfg(test)]
+#[path = "main_forward_tests.rs"]
+mod main_forward_tests;
