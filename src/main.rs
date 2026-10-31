@@ -437,7 +437,9 @@ async fn run(cli: Cli) -> Result<()> {
             let effective_model_fallback = resolve_model_fallback(model_fallback, config.as_ref());
             let http = Client::new();
             let store = auth_store(effective_auth_file)?;
-            let has_forwards = config.as_ref().is_some_and(|item| !item.forwards.is_empty());
+            let has_forwards = config
+                .as_ref()
+                .is_some_and(|item| !item.forwards.is_empty());
             let explicitly_selected_provider = provider.is_some()
                 || (!has_forwards && config.as_ref().and_then(|item| item.provider).is_some());
             let providers = resolve_served_providers(&store, provider, config.as_ref())?;
@@ -594,7 +596,10 @@ async fn status(store: AuthStore, provider: Option<String>) -> Result<()> {
         println!();
         render_provider_status(&store, provider, http.clone(), config.as_ref()).await;
     }
-    print!("{}", format_forward_status(config.as_ref(), provider.as_deref()));
+    print!(
+        "{}",
+        format_forward_status(config.as_ref(), provider.as_deref())
+    );
 
     if let Some(base_url) = running_daemon_base_url(&http).await {
         println!();

@@ -26,9 +26,7 @@ use crate::{
         types::{ChatCompletionRequest, ImageGenerationRequest, ResponsesRequest},
     },
     server::{
-        AppState, UpstreamState,
-        auth::authorize,
-        status_response::build_runtime_status_response,
+        AppState, UpstreamState, auth::authorize, status_response::build_runtime_status_response,
     },
 };
 use axum::{

@@ -10,9 +10,7 @@ use crate::{
 use serde_json::{Value, json};
 
 /// Reports configured forwards alongside the existing default-provider status.
-pub(super) async fn build_runtime_status_response(
-    state: &super::AppState,
-) -> crate::Result<Value> {
+pub(super) async fn build_runtime_status_response(state: &super::AppState) -> crate::Result<Value> {
     let mut payload = match default_provider_status(state).await {
         Ok(payload) => payload,
         Err(error) if !state.forwards.is_empty() => json!({
@@ -22,19 +20,25 @@ pub(super) async fn build_runtime_status_response(
         Err(error) => return Err(error),
     };
     if !state.forwards.is_empty() {
-        let forwards = state.forwards.iter().map(|(name, config)| {
-            let models = crate::forward::model_ids(name, config);
-            let aliases = state.model_aliases.iter()
-                .filter(|(_, source)| models.contains(source))
-                .collect::<std::collections::BTreeMap<_, _>>();
-            json!({
-                "provider": name,
-                "base_url": config.base_url,
-                "status": "configured",
-                "models": models,
-                "model_aliases": aliases,
+        let forwards = state
+            .forwards
+            .iter()
+            .map(|(name, config)| {
+                let models = crate::forward::model_ids(name, config);
+                let aliases = state
+                    .model_aliases
+                    .iter()
+                    .filter(|(_, source)| models.contains(source))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                json!({
+                    "provider": name,
+                    "base_url": config.base_url,
+                    "status": "configured",
+                    "models": models,
+                    "model_aliases": aliases,
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         if let Some(object) = payload.as_object_mut() {
             object.insert("forwards".to_owned(), Value::Array(forwards));
         }

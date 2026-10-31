@@ -160,11 +160,15 @@ impl AppState {
     ) -> Result<Self> {
         validate_forwards(&forwards)?;
         if upstreams.is_empty() && forwards.is_empty() {
-            return Err(Error::config("no upstream providers or forwards configured"));
+            return Err(Error::config(
+                "no upstream providers or forwards configured",
+            ));
         }
         for (name, config) in &forwards {
             let forwarded = ModelList::from_id_owners(
-                model_ids(name, config).into_iter().map(|id| (id, "forward")),
+                model_ids(name, config)
+                    .into_iter()
+                    .map(|id| (id, "forward")),
             );
             for model in forwarded.data {
                 if !models.data.iter().any(|listed| listed.id == model.id) {
@@ -286,13 +290,10 @@ impl AppState {
             })
             .or_else(|| {
                 let normalized = normalize_model_for_support(model);
-                self.models
-                    .data
-                    .iter()
-                    .find(|listed| {
-                        listed.owned_by != "forward"
-                            && normalize_model_for_support(&listed.id) == normalized
-                    })
+                self.models.data.iter().find(|listed| {
+                    listed.owned_by != "forward"
+                        && normalize_model_for_support(&listed.id) == normalized
+                })
             })?;
         match listed.owned_by {
             "openai-codex" => Some(Provider::Codex),
