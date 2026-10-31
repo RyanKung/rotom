@@ -1,16 +1,13 @@
-fn models(provider: Option<String>) -> Result<()> {
+fn models(provider: Option<&str>) -> Result<()> {
     let config = load_app_config()?;
-    if provider
-        .as_deref()
-        .is_some_and(|name| has_forward(config.as_ref(), name))
-    {
+    if provider.is_some_and(|name| has_forward(config.as_ref(), name)) {
         print!(
             "{}",
-            format_forward_models(config.as_ref(), provider.as_deref())
+            format_forward_models(config.as_ref(), provider)
         );
         return Ok(());
     }
-    let providers = match provider.as_deref() {
+    let providers = match provider {
         Some(provider) => vec![provider.parse()?],
         None => vec![
             Provider::Codex,
@@ -20,7 +17,7 @@ fn models(provider: Option<String>) -> Result<()> {
         ],
     };
     print!("{}", format_models(&providers, config.as_ref()));
-    let forwards = format_forward_models(config.as_ref(), provider.as_deref());
+    let forwards = format_forward_models(config.as_ref(), provider);
     if !forwards.is_empty() {
         print!("\n{forwards}");
     }

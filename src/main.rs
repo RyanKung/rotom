@@ -33,6 +33,7 @@ use rotom::{
 };
 use std::{
     collections::HashSet,
+    fmt::Write as _,
     io::{self, IsTerminal, Write},
     net::{Ipv4Addr, SocketAddr, ToSocketAddrs},
     path::PathBuf,
@@ -490,7 +491,7 @@ async fn run(cli: Cli) -> Result<()> {
             auth_file,
             provider,
         } => status(auth_store(auth_file)?, provider).await,
-        Command::Models { provider } => models(provider),
+        Command::Models { provider } => models(provider.as_deref()),
         Command::Kiro { command } => kiro_command(command),
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),

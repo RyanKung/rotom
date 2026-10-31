@@ -39,15 +39,13 @@ fn codex_credentials() -> Credentials {
 #[test]
 fn configured_forwards_allow_status_without_oauth_credentials() {
     let config = forwarding_config();
-    assert!(
-        resolve_status_selection(Vec::new(), None, Some(&config))
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        resolve_status_selection(Vec::new(), None, Some(&config)).unwrap(),
+        Vec::<Provider>::new()
     );
-    assert!(
-        resolve_status_selection(Vec::new(), Some("deepseek"), Some(&config))
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        resolve_status_selection(Vec::new(), Some("deepseek"), Some(&config)).unwrap(),
+        Vec::<Provider>::new()
     );
     assert!(resolve_status_selection(Vec::new(), Some("codex"), Some(&config)).is_err());
     assert!(resolve_status_selection(Vec::new(), Some("unknown"), Some(&config)).is_err());
@@ -63,10 +61,10 @@ fn forwarding_status_selection_preserves_builtin_provider_filters() {
             vec![Provider::Codex]
         );
     }
-    assert!(
+    assert_eq!(
         resolve_status_selection(vec![codex_credentials()], Some("deepseek"), Some(&config))
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        Vec::<Provider>::new()
     );
 }
 
@@ -102,9 +100,9 @@ fn forwarding_cli_output_obeys_provider_selection() {
         assert!(!output.contains("local/custom/model"));
         assert!(!output.contains("local-alias"));
     }
-    assert!(format_forward_status(Some(&config), Some("codex")).is_empty());
-    assert!(format_forward_models(Some(&config), Some("codex")).is_empty());
-    assert!(format_forward_status(None, None).is_empty());
-    assert!(format_forward_models(None, None).is_empty());
+    assert_eq!(format_forward_status(Some(&config), Some("codex")), "");
+    assert_eq!(format_forward_models(Some(&config), Some("codex")), "");
+    assert_eq!(format_forward_status(None, None), "");
+    assert_eq!(format_forward_models(None, None), "");
     assert!(format_forward_models(Some(&config), None).contains("local/custom/model"));
 }

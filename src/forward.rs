@@ -198,9 +198,9 @@ pub fn resolve_model<'a>(
         .then_some((config, upstream_model))
 }
 
-/// Collects warnings for model_aliases that point to a forward-style target
-/// but do not resolve to any configured forward service/model.
-/// These are treated as warnings (not hard errors) so a misconfigured forward
+/// Collects warnings for `model_aliases` that do not resolve to a forward model.
+///
+/// These are treated as warnings, not hard errors, so a misconfigured forward
 /// does not prevent the daemon from starting.
 #[must_use]
 pub fn collect_forward_alias_warnings(

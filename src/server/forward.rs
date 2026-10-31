@@ -29,15 +29,12 @@ pub(super) async fn middleware(
         return error.into_response();
     }
     let (parts, body) = request.into_parts();
-    let bytes = match to_bytes(body, MAX_FORWARD_BODY_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Error::upstream_with_status(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "forward request body exceeds the limit or could not be read",
-            )
-            .into_response();
-        }
+    let Ok(bytes) = to_bytes(body, MAX_FORWARD_BODY_BYTES).await else {
+        return Error::upstream_with_status(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "forward request body exceeds the limit or could not be read",
+        )
+        .into_response();
     };
     let Ok(mut payload) = serde_json::from_slice::<Value>(&bytes) else {
         return next
@@ -47,7 +44,7 @@ pub(super) async fn middleware(
     let Some(requested_model) = payload
         .get("model")
         .and_then(Value::as_str)
-        .map(|s| s.to_owned())
+        .map(str::to_owned)
     else {
         return next
             .run(Request::from_parts(parts, Body::from(bytes)))

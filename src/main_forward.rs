@@ -54,16 +54,16 @@ fn format_forward_status(config: Option<&AppConfig>, requested_provider: Option<
     let Some(config) = config else {
         return String::new();
     };
-    selected_forwards(Some(config), requested_provider)
-        .into_iter()
-        .map(|(name, forward)| {
-            let models = forward_model_lines(name, forward, config);
-            format!(
-                "\nprovider: {name} (forward)\nstatus: configured\nbase_url: {}\nmodels:\n{models}\n",
-                forward.base_url
-            )
-        })
-        .collect()
+    let mut output = String::new();
+    for (name, forward) in selected_forwards(Some(config), requested_provider) {
+        let models = forward_model_lines(name, forward, config);
+        let _ = write!(
+            output,
+            "\nprovider: {name} (forward)\nstatus: configured\nbase_url: {}\nmodels:\n{models}\n",
+            forward.base_url
+        );
+    }
+    output
 }
 
 /// Formats custom forwarding models alongside explicit aliases for model discovery.
