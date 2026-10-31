@@ -202,12 +202,9 @@ and restart Claude Desktop to show Low, Medium, High, Extra (`xhigh`), and Max
 self-description do not verify routing; inspect rotom's upstream model and
 effort values when diagnosing a connection.
 
-## Forwarding to Third-Party Services
+## Forwarding
 
-Add named services to `forwards` in `~/.rotom/config.json` to forward requests
-directly to any compatible HTTP API. For example, an Anthropic-compatible
-DeepSeek endpoint can be configured as follows; use model IDs accepted by your
-upstream account:
+Add a named service to `forwards` in `~/.rotom/config.json`. Requests keep their original JSON; only `model` is rewritten.
 
 ```json
 {
@@ -224,40 +221,7 @@ upstream account:
 }
 ```
 
-Each model is advertised as `service/model`, such as `deepseek/deepseek-chat`.
-Aliases use the existing `model_aliases` setting and appear alongside those
-names in `/v1/models`. Rotom creates no additional model variants. The model
-list is explicit; it is not fetched from the third-party service.
-
-```bash
-rotom status                       # includes configured forwarding services
-rotom status --provider deepseek   # URL, models, and aliases for one service
-rotom models --provider deepseek
-rotom serve
-```
-
-Configured services work without `rotom login`. Status reports them as
-`configured`; this describes local settings and does not verify credentials or
-upstream availability. It never displays forwarding keys or custom headers.
-After editing the config, restart a running daemon with `rotom daemon restart`.
-Running interactive `rotom config` preserves `forwards` and `model_aliases`.
-
-A request with `"model": "anthropic/my-deepseek"` sent to local `/v1/messages`
-is forwarded to `https://api.deepseek.com/anthropic/v1/messages` with
-`"model": "deepseek-chat"`. Other JSON fields, including provider-specific
-extensions, are retained. The upstream HTTP status, response body, and streaming
-events pass through unchanged. No API format conversion is performed: the
-request endpoint and format must be supported by that service. Forwarding routes
-JSON POST requests under `/v1/` by their top-level `model`; resource requests
-without a model and WebSockets do not select a forwarding service. A base URL
-ending in `/v1` is also supported without duplicating that path segment.
-
-`api_key` is optional and sends `Authorization: Bearer ***` upstream. For a
-service that expects another authentication header, omit `api_key` and configure
-`headers`, for example `"headers": {"x-api-key": "your-upstream-key"}`. Custom
-headers also support provider-specific requirements. Local client credentials
-are not forwarded; the local server's `api_key` remains independent of each
-upstream's credentials.
+Clients call `deepseek/deepseek-chat` or the alias. `rotom status` lists configured forwards. Restart the daemon after editing config. Optional `headers` can set `x-api-key` instead of `api_key`.
 
 
 ## Use With SDKs

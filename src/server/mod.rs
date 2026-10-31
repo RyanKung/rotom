@@ -141,15 +141,11 @@ impl AppState {
         }
     }
 
-    /// Builds state with authenticated providers, configured forwards, or both.
-    ///
-    /// Forward model IDs use the service name as a routing prefix. Responses and
-    /// request fields other than the selected model pass through unchanged.
+    /// Builds state with providers, forwards, or both.
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid forwarding settings, an HTTP client setup
-    /// failure, or a configuration with no upstreams or forwards.
+    /// Returns an error for invalid forwards, HTTP client setup, or no backends.
     pub fn new_multi_with_forwards(
         upstreams: Vec<UpstreamState>,
         api_key: Option<String>,

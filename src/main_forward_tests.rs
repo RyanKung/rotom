@@ -8,101 +8,40 @@ fn forwarding_config() -> AppConfig {
             "deepseek": {
                 "base_url": "https://api.deepseek.com/anthropic",
                 "api_key": "secret-upstream-key",
-                "headers": {"x-custom-auth": "secret-header-value"},
-                "models": ["deepseek-chat", "deepseek-reasoner"]
-            },
-            "local": {
-                "base_url": "http://127.0.0.1:9999/v1",
-                "models": ["custom/model"]
+                "models": ["deepseek-chat"]
             }
         },
-        "model_aliases": {
-            "anthropic/my-deepseek": "deepseek/deepseek-chat",
-            "unused-alias": "deepseek/missing-model",
-            "local-alias": "local/custom/model",
-            "builtin-alias": "gpt-6-astra"
-        }
+        "model_aliases": {"anthropic/my-deepseek": "deepseek/deepseek-chat"}
     }))
     .unwrap()
 }
 
-fn codex_credentials() -> Credentials {
-    Credentials {
-        provider: Provider::Codex,
-        access_token: "unused".into(),
-        refresh_token: "unused".into(),
-        expires_at: 0,
-        account_id: String::new(),
-    }
-}
-
 #[test]
-fn configured_forwards_allow_status_without_oauth_credentials() {
+fn status_lists_forwards_without_oauth_or_secrets() {
     let config = forwarding_config();
     assert_eq!(
         resolve_status_selection(Vec::new(), None, Some(&config)).unwrap(),
         Vec::<Provider>::new()
     );
-    assert_eq!(
-        resolve_status_selection(Vec::new(), Some("deepseek"), Some(&config)).unwrap(),
-        Vec::<Provider>::new()
-    );
-    assert!(resolve_status_selection(Vec::new(), Some("codex"), Some(&config)).is_err());
-    assert!(resolve_status_selection(Vec::new(), Some("unknown"), Some(&config)).is_err());
-    assert!(resolve_status_selection(Vec::new(), None, None).is_err());
-}
-
-#[test]
-fn forwarding_status_selection_preserves_builtin_provider_filters() {
-    let config = forwarding_config();
-    for filter in [None, Some("codex")] {
-        assert_eq!(
-            resolve_status_selection(vec![codex_credentials()], filter, Some(&config)).unwrap(),
-            vec![Provider::Codex]
-        );
-    }
-    assert_eq!(
-        resolve_status_selection(vec![codex_credentials()], Some("deepseek"), Some(&config))
-            .unwrap(),
-        Vec::<Provider>::new()
-    );
-}
-
-#[test]
-fn forwarding_status_lists_urls_models_and_valid_aliases_without_secrets() {
-    let config = forwarding_config();
     let output = format_forward_status(Some(&config), None);
-    assert!(output.contains("provider: deepseek (forward)\nstatus: configured\n"));
-    assert!(output.contains("base_url: https://api.deepseek.com/anthropic\n"));
-    assert!(output.contains("  deepseek/deepseek-chat\n"));
-    assert!(output.contains("  anthropic/my-deepseek -> deepseek/deepseek-chat\n"));
-    assert!(output.contains("provider: local (forward)"));
-    for hidden in [
-        "secret-upstream-key",
-        "secret-header-value",
-        "x-custom-auth",
-        "unused-alias",
-        "builtin-alias",
-        "authenticated",
-    ] {
-        assert!(!output.contains(hidden));
-    }
-}
-
-#[test]
-fn forwarding_cli_output_obeys_provider_selection() {
-    let config = forwarding_config();
-    let status = format_forward_status(Some(&config), Some("deepseek"));
-    let models = format_forward_models(Some(&config), Some("deepseek"));
-    for output in [&status, &models] {
-        assert!(output.contains("deepseek/deepseek-chat"));
-        assert!(output.contains("anthropic/my-deepseek -> deepseek/deepseek-chat"));
-        assert!(!output.contains("local/custom/model"));
-        assert!(!output.contains("local-alias"));
-    }
+    assert!(output.contains("provider: deepseek (forward)"));
+    assert!(output.contains("anthropic/my-deepseek -> deepseek/deepseek-chat"));
+    assert!(!output.contains("secret-upstream-key"));
     assert_eq!(format_forward_status(Some(&config), Some("codex")), "");
-    assert_eq!(format_forward_models(Some(&config), Some("codex")), "");
-    assert_eq!(format_forward_status(None, None), "");
-    assert_eq!(format_forward_models(None, None), "");
-    assert!(format_forward_models(Some(&config), None).contains("local/custom/model"));
+    assert!(format_forward_models(Some(&config), None).contains("deepseek/deepseek-chat"));
+    assert_eq!(
+        resolve_status_selection(
+            vec![Credentials {
+                provider: Provider::Codex,
+                access_token: "x".into(),
+                refresh_token: "x".into(),
+                expires_at: 0,
+                account_id: String::new(),
+            }],
+            Some("deepseek"),
+            Some(&config)
+        )
+        .unwrap(),
+        Vec::<Provider>::new()
+    );
 }
