@@ -20,6 +20,11 @@ pub(super) async fn build_runtime_status_response(state: &super::AppState) -> cr
         Err(error) => return Err(error),
     };
     if !state.forwards.is_empty() {
+        let alias_warnings = crate::forward::collect_forward_alias_warnings(
+            &state.forwards,
+            &state.model_aliases,
+        );
+
         let forwards = state
             .forwards
             .iter()
@@ -39,8 +44,19 @@ pub(super) async fn build_runtime_status_response(state: &super::AppState) -> cr
                 })
             })
             .collect::<Vec<_>>();
+
         if let Some(object) = payload.as_object_mut() {
             object.insert("forwards".to_owned(), Value::Array(forwards));
+            if !alias_warnings.is_empty() {
+                let mut warnings = object
+                    .remove("warnings")
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                for w in alias_warnings {
+                    warnings.push(Value::String(w));
+                }
+                object.insert("warnings".to_owned(), Value::Array(warnings));
+            }
         }
     }
     Ok(payload)

@@ -198,6 +198,26 @@ pub fn resolve_model<'a>(
         .then_some((config, upstream_model))
 }
 
+/// Collects warnings for model_aliases that point to a forward-style target
+/// but do not resolve to any configured forward service/model.
+/// These are treated as warnings (not hard errors) so a misconfigured forward
+/// does not prevent the daemon from starting.
+#[must_use]
+pub fn collect_forward_alias_warnings(
+    forwards: &BTreeMap<String, ForwardConfig>,
+    aliases: &BTreeMap<String, String>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (alias, target) in aliases {
+        if target.contains('/') && resolve_model(forwards, target).is_none() {
+            warnings.push(format!(
+                "model_alias {alias:?} points to unknown forward model {target:?}"
+            ));
+        }
+    }
+    warnings
+}
+
 /// Appends the request path and query to a service root, preserving its path prefix.
 ///
 /// A base URL ending in `/v1` consumes the incoming `/v1` prefix once.
