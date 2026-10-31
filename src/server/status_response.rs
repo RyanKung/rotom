@@ -20,10 +20,8 @@ pub(super) async fn build_runtime_status_response(state: &super::AppState) -> cr
         Err(error) => return Err(error),
     };
     if !state.forwards.is_empty() {
-        let alias_warnings = crate::forward::collect_forward_alias_warnings(
-            &state.forwards,
-            &state.model_aliases,
-        );
+        let alias_warnings =
+            crate::forward::collect_forward_alias_warnings(&state.forwards, &state.model_aliases);
 
         let forwards = state
             .forwards
