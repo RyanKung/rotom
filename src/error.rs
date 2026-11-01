@@ -37,6 +37,10 @@ pub enum Error {
         message: String,
     },
 
+    /// Runtime reload validation or control protocol failure.
+    #[error(transparent)]
+    Reload(#[from] crate::server::reload::ReloadError),
+
     /// Authentication failure for an incoming API request.
     #[error("unauthorized")]
     Unauthorized,
@@ -79,7 +83,7 @@ impl Error {
     pub const fn status_code(&self) -> StatusCode {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Config(_) | Self::OAuth(_) => StatusCode::BAD_REQUEST,
+            Self::Config(_) | Self::OAuth(_) | Self::Reload(_) => StatusCode::BAD_REQUEST,
             Self::Upstream { status, .. } => *status,
             Self::Http(_) => StatusCode::BAD_GATEWAY,
             Self::Io(_) | Self::Json(_) | Self::Url(_) => StatusCode::INTERNAL_SERVER_ERROR,

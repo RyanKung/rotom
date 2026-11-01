@@ -330,7 +330,7 @@ Run a background daemon instead of `rotom serve`:
 ```bash
 rotom daemon install --bind 127.0.0.1:14550 --api-key local-secret
 rotom daemon start
-rotom daemon status      # also: restart / stop / uninstall
+rotom daemon status      # also: reload / restart / stop / uninstall
 ```
 
 macOS uses a LaunchAgent; Linux uses a systemd user unit. On Windows, use WSL.
@@ -340,8 +340,37 @@ service definition.
 Without an explicit `--model-fallback` or `ROTOM_MODEL_FALLBACK` at installation,
 the daemon reads `model_fallback` from its runtime config on each start, or uses
 the installed binary's default when the config leaves it unset. After changing
-that config, run `rotom daemon restart`. An explicit installation override stays
+that config, run `rotom daemon reload`. An explicit installation override stays
 in the service definition and takes precedence over later config changes.
+
+`rotom daemon reload` rereads `config.json` without restarting the process. It
+supports `model_aliases`, `models`, `forwards` (including URLs, headers and keys),
+local `api_key`, and `model_fallback`. The command waits for an acknowledgement
+and exits unsuccessfully if loading, validation, or preparation fails; the old
+configuration remains active. A missing file is rejected rather than treated as
+a reset. Write a complete JSON file before requesting reload (prefer atomic rename).
+
+Each request keeps the configuration it entered with. Active SSE streams,
+WebSocket connections, and batch jobs continue with their original settings;
+new requests use the new snapshot. Response continuation and batch records
+survive reload. Explicit CLI/environment API-key and fallback overrides retain
+precedence over file values.
+
+Changes to `bind_host`, `bind_port`, `auth_file`, or `provider` require a restart
+and cause the entire reload to be rejected. Native provider credentials and the
+set of native providers are retained; adding providers requires restart. When
+listener/auth-file/provider options are captured in a service definition, use
+`rotom daemon reinstall` to update those options.
+
+The command also works with a foreground `rotom serve`. Both processes must use
+the same `ROTOM_HOME`. On macOS/Linux the control socket is
+`/tmp/rotom-<uid>/<sha256>.sock`, inside an owner-only directory and independent
+of the local API key. The hash identifies the canonical configuration directory
+and filename, so long home paths and symlinked directory aliases work consistently. Use a separate home for
+each running server. Configuration preparation has a 45-second deadline; the CLI
+waits up to 60 seconds for a reply. A transport timeout does not confirm either
+success or failure. An older running binary must be restarted once after upgrade
+to enable this control endpoint.
 
 If `ROTOM_HOME` is explicitly set during installation, the service preserves that
 directory in its environment. Relative paths are resolved against the installer's

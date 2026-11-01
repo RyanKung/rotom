@@ -19,6 +19,7 @@ fn daemon_command(command: DaemonCommand, verbosity: u8) -> Result<()> {
         }
         DaemonCommand::Start => daemon::start(),
         DaemonCommand::Restart => daemon::restart(),
+        DaemonCommand::Reload => rotom::server::reload::request_reload(),
         DaemonCommand::Status => daemon::status(),
         DaemonCommand::Stop => daemon::stop(),
         DaemonCommand::Uninstall => daemon::uninstall(),
