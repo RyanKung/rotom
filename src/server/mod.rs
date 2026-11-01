@@ -23,6 +23,10 @@ use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tokio::net::TcpListener;
 
 mod auth;
+mod model_list;
+/// Atomic runtime configuration reload and local control protocol.
+pub mod reload;
+pub use model_list::resolve_model_list_for_upstreams;
 mod forward;
 mod handlers;
 mod status_response;
