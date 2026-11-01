@@ -47,7 +47,9 @@ pub enum ReloadError {
     #[error("model IDs, aliases and fallback must be non-empty and contain no whitespace")]
     InvalidModelId,
     /// Local authentication keys must fit in HTTP headers.
-    #[error("local API key must contain only printable ASCII characters")]
+    #[error(
+        "local API key must contain only printable ASCII characters and must not end with a space"
+    )]
     InvalidApiKey,
     /// No candidate was committed within the preparation deadline.
     #[error("reload preparation timed out; old configuration retained")]
@@ -174,7 +176,7 @@ fn validate_reload(startup: &AppConfig, next: &AppConfig) -> Result<()> {
     if next
         .api_key
         .as_ref()
-        .is_some_and(|key| !key.is_ascii() || key.chars().any(char::is_control))
+        .is_some_and(|key| !api_key_survives_http_parsing(key))
     {
         return Err(ReloadError::InvalidApiKey.into());
     }
@@ -250,4 +252,10 @@ pub fn request_reload() -> Result<()> {
     }
     #[cfg(not(unix))]
     Err(ReloadError::UnsupportedPlatform.into())
+}
+
+/// HTTP strips trailing optional whitespace from header values before authorization.
+#[cfg(any(unix, test))]
+fn api_key_survives_http_parsing(key: &str) -> bool {
+    key.is_ascii() && !key.chars().any(char::is_control) && !key.ends_with(' ')
 }

@@ -509,3 +509,79 @@ async fn long_config_home_serves_and_reloads_through_its_directory_alias() {
     let _ = server.await;
     assert!(!socket_path.exists());
 }
+
+#[tokio::test]
+async fn trailing_space_keys_are_rejected_and_old_http_auth_remains_usable() {
+    let dir = TempDir::new().unwrap();
+    let initial = config("http://127.0.0.1:9", "old-key", "model");
+    let runtime = runtime(&dir, initial.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/models", listener.local_addr().unwrap());
+    let app = Router::new()
+        .fallback(dispatch)
+        .with_state(Arc::clone(&runtime));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+    for key in ["new-key ", "new-key  ", " "] {
+        let mut candidate = initial.clone();
+        candidate.api_key = Some(key.into());
+        runtime.settings.store.save(&candidate).unwrap();
+        assert!(matches!(
+            runtime.reload().await,
+            Err(Error::Reload(ReloadError::InvalidApiKey))
+        ));
+        for (header, value) in [
+            ("authorization", "Bearer old-key"),
+            ("x-api-key", "old-key"),
+        ] {
+            assert_eq!(
+                http.get(&url)
+                    .header(header, value)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        for (header, value) in [
+            ("authorization", format!("Bearer {key}")),
+            ("x-api-key", key.into()),
+        ] {
+            assert_eq!(
+                http.get(&url)
+                    .header(header, value)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+    let mut candidate = initial;
+    candidate.api_key = Some("new-key".into());
+    runtime.settings.store.save(&candidate).unwrap();
+    runtime.reload().await.unwrap();
+    for (header, value) in [
+        ("authorization", "Bearer new-key"),
+        ("x-api-key", "new-key"),
+    ] {
+        assert_eq!(
+            http.get(&url)
+                .header(header, value)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+    }
+    server.abort();
+    let _ = server.await;
+}
