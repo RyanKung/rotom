@@ -298,12 +298,10 @@ async fn control_socket_acknowledges_success_and_rejection_and_is_private() {
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new().unwrap();
     let runtime = runtime(&dir, config("http://127.0.0.1:9", "key", "model"));
-    // Keep socket paths below macOS's sockaddr_un limit, even with a long TMPDIR.
-    let control_path =
-        std::path::PathBuf::from(format!("/tmp/rotom-reload-{}.json", std::process::id()));
+    let control_path = runtime.settings.store.path().to_path_buf();
     let socket = control::ControlSocket::bind(&control_path).unwrap();
     assert_eq!(
-        std::fs::metadata(control_path.with_extension("reload.sock"))
+        std::fs::metadata(control::socket_path(&control_path).unwrap())
             .unwrap()
             .permissions()
             .mode()
@@ -326,10 +324,6 @@ async fn control_socket_acknowledges_success_and_rejection_and_is_private() {
     assert!(error.to_string().contains("JSON"));
     server.abort();
     let _ = server.await;
-    let _ = std::fs::remove_file(format!(
-        "/tmp/rotom-reload-{}.reload.lock",
-        std::process::id()
-    ));
 }
 
 #[tokio::test]
@@ -394,9 +388,9 @@ async fn native_model_overrides_and_fallback_apply_to_the_next_snapshot() {
 #[cfg(unix)]
 #[tokio::test]
 async fn socket_recovers_after_crash_but_never_removes_an_unrelated_file() {
-    let config_path =
-        std::path::PathBuf::from(format!("/tmp/rotom-stale-{}.json", std::process::id()));
-    let socket_path = config_path.with_extension("reload.sock");
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.json");
+    let socket_path = control::socket_path(&config_path).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
     drop(listener); // Simulate a process exit that left the pathname behind.
     let socket = control::ControlSocket::bind(&config_path).unwrap();
@@ -418,4 +412,100 @@ fn reload_command_reports_unsupported_transport() {
         request_reload(),
         Err(Error::Reload(ReloadError::UnsupportedPlatform))
     ));
+}
+
+#[tokio::test]
+async fn unrepresentable_api_keys_are_rejected_without_replacing_working_auth() {
+    let dir = TempDir::new().unwrap();
+    let initial = config("http://127.0.0.1:9", "old-key", "model");
+    let runtime = runtime(&dir, initial.clone());
+    for key in ["密钥", "café", "bad\nkey", "bad\tkey", "bad\u{7f}key"] {
+        let mut candidate = initial.clone();
+        candidate.api_key = Some(key.into());
+        runtime.settings.store.save(&candidate).unwrap();
+        assert!(matches!(
+            runtime.reload().await,
+            Err(Error::Reload(ReloadError::InvalidApiKey))
+        ));
+        assert_eq!(models(&runtime, "old-key").await.0, StatusCode::OK);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn long_config_home_serves_and_reloads_through_its_directory_alias() {
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+    let dir = TempDir::new().unwrap();
+    let initial = config("http://127.0.0.1:9", "old-key", "model");
+    let Runtime {
+        base, mut settings, ..
+    } = Arc::try_unwrap(runtime(&dir, initial.clone()))
+        .ok()
+        .unwrap();
+    let long_home = dir.path().join("long-home-".repeat(20));
+    std::fs::create_dir(&long_home).unwrap();
+    settings.store = AppConfigStore::new(long_home.join("config.json"));
+    settings.store.save(&initial).unwrap();
+    let alias = dir.path().join("alias");
+    symlink(&long_home, &alias).unwrap();
+    let alias_config = alias.join("config.json");
+    let socket_path = control::socket_path(settings.store.path()).unwrap();
+    assert!(socket_path.as_os_str().as_bytes().len() < 104);
+    assert_eq!(socket_path, control::socket_path(&alias_config).unwrap());
+    assert_ne!(
+        socket_path,
+        control::socket_path(&dir.path().join("config.json")).unwrap()
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let server = tokio::spawn(async move { serve_reloadable(&[addr], base, settings).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !socket_path.exists() {
+            assert!(!server.is_finished());
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let http = reqwest::Client::new();
+    let url = format!("http://{addr}/v1/models");
+    assert_eq!(
+        http.get(&url)
+            .bearer_auth("old-key")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let mut updated = initial;
+    updated.api_key = Some("new-key".into());
+    AppConfigStore::new(&alias_config).save(&updated).unwrap();
+    tokio::task::spawn_blocking(move || control::request(&alias_config))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        http.get(&url)
+            .bearer_auth("new-key")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        http.get(&url)
+            .bearer_auth("old-key")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    server.abort();
+    let _ = server.await;
+    assert!(!socket_path.exists());
 }

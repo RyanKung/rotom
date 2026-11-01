@@ -2,12 +2,14 @@
 
 use super::{ReloadError, Runtime};
 use crate::{Error, Result};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     os::fd::AsRawFd,
     os::unix::{
-        fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::UnixStream,
     },
     path::{Path, PathBuf},
@@ -21,6 +23,34 @@ use tokio::{
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Uses a bounded pathname independent of `ROTOM_HOME` and `TMPDIR` lengths.
+pub(super) fn socket_path(config_path: &Path) -> Result<PathBuf> {
+    // SAFETY: geteuid has no arguments or memory-safety preconditions.
+    let uid = unsafe { libc::geteuid() };
+    let directory = PathBuf::from(format!("/tmp/rotom-{uid}"));
+    match fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.permissions().mode() & 0o777 != 0o700
+    {
+        return Err(ReloadError::UnsafeControlDirectory.into());
+    }
+    let parent = config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = config_path
+        .file_name()
+        .ok_or_else(|| Error::config("configuration path must name a file"))?;
+    // Canonicalize only the directory: atomic config replacement must not move the endpoint.
+    let identity = fs::canonicalize(parent)?.join(name);
+    let digest = hex::encode(Sha256::digest(identity.as_os_str().as_bytes()));
+    Ok(directory.join(format!("{digest}.sock")))
+}
+
 pub(super) struct ControlSocket {
     listener: UnixListener,
     path: PathBuf,
@@ -32,10 +62,10 @@ pub(super) struct ControlSocket {
 
 impl ControlSocket {
     pub(super) fn bind(config_path: &Path) -> Result<Self> {
-        let path = config_path.with_extension("reload.sock");
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent)?;
         }
+        let path = socket_path(config_path)?;
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -124,7 +154,7 @@ impl Drop for ControlSocket {
 }
 
 pub(super) fn request(config_path: &Path) -> Result<()> {
-    let mut stream = UnixStream::connect(config_path.with_extension("reload.sock"))?;
+    let mut stream = UnixStream::connect(socket_path(config_path)?)?;
     stream.set_read_timeout(Some(CONTROL_TIMEOUT))?;
     stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
     stream.write_all(b"reload\n")?;

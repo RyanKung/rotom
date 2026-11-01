@@ -364,8 +364,9 @@ listener/auth-file/provider options are captured in a service definition, use
 
 The command also works with a foreground `rotom serve`. Both processes must use
 the same `ROTOM_HOME`. On macOS/Linux the control socket is
-`$ROTOM_HOME/config.reload.sock` (default `~/.rotom/config.reload.sock`), restricted
-to the owning user and independent of the local API key. Use a separate home for
+`/tmp/rotom-<uid>/<sha256>.sock`, inside an owner-only directory and independent
+of the local API key. The hash identifies the canonical configuration directory
+and filename, so long home paths and symlinked directory aliases work consistently. Use a separate home for
 each running server. Configuration preparation has a 45-second deadline; the CLI
 waits up to 60 seconds for a reply. A transport timeout does not confirm either
 success or failure. An older running binary must be restarted once after upgrade

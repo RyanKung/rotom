@@ -47,7 +47,7 @@ pub enum ReloadError {
     #[error("model IDs, aliases and fallback must be non-empty and contain no whitespace")]
     InvalidModelId,
     /// Local authentication keys must fit in HTTP headers.
-    #[error("local API key must not contain control characters")]
+    #[error("local API key must contain only printable ASCII characters")]
     InvalidApiKey,
     /// No candidate was committed within the preparation deadline.
     #[error("reload preparation timed out; old configuration retained")]
@@ -55,6 +55,11 @@ pub enum ReloadError {
     /// Each configuration home has exactly one reload endpoint.
     #[error("reload socket is already in use; use a separate ROTOM_HOME for each server")]
     ControlInUse,
+    /// The shared temporary pathname must resolve to an owner-only directory.
+    #[error(
+        "reload socket directory must be a real directory owned by the current user with mode 0700"
+    )]
+    UnsafeControlDirectory,
     /// Only the reload command is accepted on the private socket.
     #[error("unknown control command")]
     InvalidCommand,
@@ -169,7 +174,7 @@ fn validate_reload(startup: &AppConfig, next: &AppConfig) -> Result<()> {
     if next
         .api_key
         .as_ref()
-        .is_some_and(|key| key.chars().any(char::is_control))
+        .is_some_and(|key| !key.is_ascii() || key.chars().any(char::is_control))
     {
         return Err(ReloadError::InvalidApiKey.into());
     }
