@@ -410,3 +410,12 @@ async fn socket_recovers_after_crash_but_never_removes_an_unrelated_file() {
     std::fs::remove_file(socket_path).unwrap();
     std::fs::remove_file(config_path.with_extension("reload.lock")).unwrap();
 }
+
+#[cfg(not(unix))]
+#[test]
+fn reload_command_reports_unsupported_transport() {
+    assert!(matches!(
+        request_reload(),
+        Err(Error::Reload(ReloadError::UnsupportedPlatform))
+    ));
+}

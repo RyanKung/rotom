@@ -3,21 +3,30 @@
 //! Invariant: each request owns exactly one router generation. Preparing a
 //! candidate never mutates the published generation or the shared request stores.
 
-use super::{AppState, resolve_model_list_for_upstreams, router};
+use super::AppState;
+#[cfg(any(unix, test))]
+use super::{resolve_model_list_for_upstreams, router};
+#[cfg(any(unix, test))]
+use crate::Error;
 use crate::{
-    Error, Result,
+    Result,
     config::{AppConfig, AppConfigStore},
 };
+#[cfg(any(unix, test))]
 use axum::{
     Router,
     extract::{Request, State},
     response::Response,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::net::SocketAddr;
+#[cfg(any(unix, test))]
+use std::sync::Arc;
+#[cfg(any(unix, test))]
 use tokio::{
     net::TcpListener,
     sync::{Mutex, RwLock},
 };
+#[cfg(any(unix, test))]
 use tower::ServiceExt;
 
 #[cfg(unix)]
@@ -71,6 +80,7 @@ pub struct ReloadSettings {
     pub default_fallback: String,
 }
 
+#[cfg(any(unix, test))]
 struct Runtime {
     published: RwLock<Router>,
     // Shared token managers and response/batch stores survive every generation.
@@ -79,6 +89,7 @@ struct Runtime {
     reload_lock: Mutex<()>,
 }
 
+#[cfg(any(unix, test))]
 impl Runtime {
     fn new(base: AppState, settings: ReloadSettings) -> Self {
         Self {
@@ -133,6 +144,7 @@ impl Runtime {
     }
 }
 
+#[cfg(any(unix, test))]
 fn validate_reload(startup: &AppConfig, next: &AppConfig) -> Result<()> {
     if startup.bind_host != next.bind_host
         || startup.bind_port != next.bind_port
@@ -164,6 +176,7 @@ fn validate_reload(startup: &AppConfig, next: &AppConfig) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(unix, test))]
 async fn dispatch(State(runtime): State<Arc<Runtime>>, request: Request) -> Response {
     // Drop the lock before reading the request body or contacting an upstream.
     let snapshot = runtime.published.read().await.clone();
@@ -177,6 +190,7 @@ async fn dispatch(State(runtime): State<Arc<Runtime>>, request: Request) -> Resp
 ///
 /// # Errors
 /// Returns an error if listeners or the control socket cannot be bound or served.
+#[cfg(unix)]
 pub async fn serve_reloadable(
     addrs: &[SocketAddr],
     state: AppState,
@@ -197,17 +211,25 @@ pub async fn serve_reloadable(
         let app = app.clone();
         async move { axum::serve(listener, app).await }
     });
-    #[cfg(unix)]
-    {
-        let control = control::ControlSocket::bind(runtime.settings.store.path())?;
-        tokio::select! {
-            result = futures_util::future::try_join_all(servers) => { result?; }
-            result = control.serve(&runtime) => { result?; }
-        }
+    let control = control::ControlSocket::bind(runtime.settings.store.path())?;
+    tokio::select! {
+        result = futures_util::future::try_join_all(servers) => { result?; }
+        result = control.serve(&runtime) => { result?; }
     }
-    #[cfg(not(unix))]
-    futures_util::future::try_join_all(servers).await?;
     Ok(())
+}
+
+/// Serves ordinary API listeners on platforms without a local reload transport.
+///
+/// # Errors
+/// Returns an error if API listeners cannot be bound or served.
+#[cfg(not(unix))]
+pub async fn serve_reloadable(
+    addrs: &[SocketAddr],
+    state: AppState,
+    _settings: ReloadSettings,
+) -> Result<()> {
+    super::serve_all(addrs, state).await
 }
 
 /// Requests reload and waits for an explicit success or failure acknowledgement.
