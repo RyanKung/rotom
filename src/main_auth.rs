@@ -36,11 +36,12 @@ fn prompt_login_provider(store: &AuthStore) -> Result<Provider> {
     parse_login_provider_choice(input.trim())
 }
 
-const LOGIN_PROVIDERS: [Provider; 4] = [
+const LOGIN_PROVIDERS: [Provider; 5] = [
     Provider::Codex,
     Provider::Grok,
     Provider::Kiro,
     Provider::Vercel,
+    Provider::Gemini,
 ];
 
 fn parse_login_provider_choice(value: &str) -> Result<Provider> {
@@ -49,6 +50,7 @@ fn parse_login_provider_choice(value: &str) -> Result<Provider> {
         "2" => Ok(Provider::Grok),
         "3" => Ok(Provider::Kiro),
         "4" => Ok(Provider::Vercel),
+        "5" => Ok(Provider::Gemini),
         other => other.parse(),
     }
 }
@@ -70,6 +72,7 @@ const fn login_provider_label(provider: Provider) -> &'static str {
         Provider::Grok => "grok",
         Provider::Kiro => "kiro",
         Provider::Vercel => "vercel",
+        Provider::Gemini => "gemini",
     }
 }
 
@@ -134,6 +137,7 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
         return login_vercel(&store, show_daemon_restart_hint);
     }
     let flow = match provider {
+        Provider::Gemini => GeminiOAuthClient::new(http.clone()).create_authorization_flow()?,
         Provider::Codex => create_authorization_flow(originator)?,
         Provider::Grok => {
             GrokOAuthClient::default()
@@ -152,8 +156,23 @@ async fn login(store: AuthStore, provider: Provider, originator: &str) -> Result
         "After login, your browser may fail to load the localhost callback. Copy the full address from the browser address bar and paste it here."
     );
 
-    let code = prompt_authorization_code(&flow.state)?;
+    let code = if provider == Provider::Gemini {
+        print!("Full callback URL: ");
+        io::stdout().flush()?;
+        let mut callback = String::new();
+        io::stdin().read_line(&mut callback)?;
+        GeminiOAuthClient::callback_code(callback.trim(), &flow.state)?
+    } else {
+        prompt_authorization_code(&flow.state)?
+    };
     let credentials = match provider {
+        Provider::Gemini => {
+            let client = GeminiOAuthClient::new(http);
+            let pending = client.exchange_authorization_code(&code, &flow.verifier).await?;
+            store.save(&pending)?;
+            println!("Google OAuth credentials saved. Resolving Antigravity project; if setup fails, run rotom refresh --provider gemini to retry.");
+            client.ensure_project(pending).await?
+        },
         Provider::Codex => {
             CodexOAuthClient::new(http)
                 .exchange_authorization_code(&code, &flow.verifier)
@@ -298,7 +317,7 @@ async fn refresh(store: AuthStore, provider: Option<String>) -> Result<()> {
         }
         let mut failed = false;
         for credentials in all {
-            match refresh_credentials(&credentials).await {
+            match refresh_credentials(&store, &credentials).await {
                 Ok(refreshed) => {
                     store.save(&refreshed)?;
                     println!("refreshed {}", credential_subject(&refreshed));
@@ -320,14 +339,20 @@ async fn refresh(store: AuthStore, provider: Option<String>) -> Result<()> {
         return Ok(());
     };
 
-    let refreshed = refresh_credentials(&credentials).await?;
+    let refreshed = refresh_credentials(&store, &credentials).await?;
     store.save(&refreshed)?;
     println!("refreshed {}", credential_subject(&refreshed));
     Ok(())
 }
 
-async fn refresh_credentials(credentials: &Credentials) -> Result<Credentials> {
+async fn refresh_credentials(store: &AuthStore, credentials: &Credentials) -> Result<Credentials> {
     match credentials.provider {
+        Provider::Gemini => {
+            let client = GeminiOAuthClient::default();
+            let refreshed = client.refresh_credentials(credentials).await?;
+            store.save(&refreshed)?;
+            client.ensure_project(refreshed).await
+        },
         Provider::Codex => {
             CodexOAuthClient::default()
                 .refresh_token(&credentials.refresh_token)

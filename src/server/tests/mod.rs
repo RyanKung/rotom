@@ -861,3 +861,5 @@ mod responses_provider_strategy;
 mod responses_resources;
 mod responses_streaming;
 mod tts;
+
+mod gemini;

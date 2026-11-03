@@ -1,10 +1,21 @@
-fn models(provider: Option<&str>) -> Result<()> {
+async fn models(provider: Option<&str>) -> Result<()> {
     let config = load_app_config()?;
     if provider.is_some_and(|name| has_forward(config.as_ref(), name)) {
         print!(
             "{}",
             format_forward_models(config.as_ref(), provider)
         );
+        return Ok(());
+    }
+    if provider.is_some_and(|name| name.parse::<Provider>().ok() == Some(Provider::Gemini))
+        && config.as_ref().is_none_or(|cfg| !cfg.models.contains_key(&Provider::Gemini)) {
+        let http = Client::new();
+        let store = auth_store(config_auth_file(config.as_ref()))?;
+        let manager = TokenManager::new_for_provider(store, Provider::Gemini, http.clone());
+        let credentials = manager.credentials().await?;
+        let client = CodexClient::new_for_provider(http, Provider::Gemini);
+        let models = client.list_gemini_models(&credentials).await?;
+        print!("{}", format_model_groups(&[(Provider::Gemini, models.data.into_iter().map(|m| m.id).collect())]));
         return Ok(());
     }
     let providers = match provider {
@@ -14,6 +25,7 @@ fn models(provider: Option<&str>) -> Result<()> {
             Provider::Grok,
             Provider::Kiro,
             Provider::Vercel,
+            Provider::Gemini,
         ],
     };
     print!("{}", format_models(&providers, config.as_ref()));
@@ -54,6 +66,7 @@ const fn model_provider_label(provider: Provider) -> &'static str {
         Provider::Grok => "Grok",
         Provider::Kiro => "Kiro",
         Provider::Vercel => "Vercel AI Gateway",
+        Provider::Gemini => "Gemini subscription (Antigravity)",
     }
 }
 

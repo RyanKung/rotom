@@ -28,6 +28,8 @@ pub enum Provider {
     Kiro,
     /// Vercel AI Gateway API key backed by the OpenAI-compatible gateway API.
     Vercel,
+    /// Google OAuth backed by the Antigravity subscription service.
+    Gemini,
 }
 
 impl Provider {
@@ -39,6 +41,7 @@ impl Provider {
             Self::Grok => "grok",
             Self::Kiro => "kiro",
             Self::Vercel => "vercel",
+            Self::Gemini => "gemini",
         }
     }
 
@@ -50,6 +53,7 @@ impl Provider {
             Self::Grok => "Grok",
             Self::Kiro => "Kiro",
             Self::Vercel => "Vercel",
+            Self::Gemini => "Gemini",
         }
     }
 
@@ -71,6 +75,7 @@ impl FromStr for Provider {
 
     fn from_str(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "gemini" | "gemini-cli" => Ok(Self::Gemini),
             "codex" | "openai-codex" | "openai" => Ok(Self::Codex),
             "grok" | "xai" | "xai-oauth" | "grok-oauth" => Ok(Self::Grok),
             "kiro" | "kiro-cli" | "kiro-desktop" => Ok(Self::Kiro),

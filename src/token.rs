@@ -1,7 +1,7 @@
 use crate::{
     Error, Result,
     config::{AuthStore, Credentials, Provider},
-    oauth::{CodexOAuthClient, GrokOAuthClient, KiroOAuthClient},
+    oauth::{CodexOAuthClient, GeminiOAuthClient, GrokOAuthClient, KiroOAuthClient},
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -32,6 +32,7 @@ impl TokenManager {
     pub fn new_for_provider(store: AuthStore, provider: Provider, http: reqwest::Client) -> Self {
         let oauth = match provider {
             Provider::Codex => OAuthClient::Codex(CodexOAuthClient::new(http)),
+            Provider::Gemini => OAuthClient::Gemini(GeminiOAuthClient::new(http)),
             Provider::Grok => OAuthClient::Grok(GrokOAuthClient::new(http)),
             Provider::Kiro => OAuthClient::Kiro(KiroOAuthClient::new(http)),
             Provider::Vercel => OAuthClient::StaticBearer {
@@ -76,8 +77,16 @@ impl TokenManager {
         let refreshed = self.refresh_credentials(&credentials).await?;
         self.store.save(&refreshed)?;
         *guard = Some(refreshed.clone());
+        let ready = if let OAuthClient::Gemini(client) = &self.oauth {
+            let ready = client.ensure_project(refreshed).await?;
+            self.store.save(&ready)?;
+            *guard = Some(ready.clone());
+            ready
+        } else {
+            refreshed
+        };
         drop(guard);
-        Ok(refreshed)
+        Ok(ready)
     }
 
     /// Returns valid credentials, refreshing them when they are near expiry.
@@ -87,6 +96,29 @@ impl TokenManager {
     /// Returns an error when no credentials are stored locally, the refresh
     /// request fails, or persisted credentials cannot be loaded or saved.
     pub async fn credentials(&self) -> Result<Credentials> {
+        if let OAuthClient::Gemini(client) = &self.oauth {
+            let mut guard = self.cached.write().await;
+            let previous = guard
+                .clone()
+                .or(self.store.load_provider(Provider::Gemini)?)
+                .ok_or_else(|| Error::config("not logged in; run rotom login --provider gemini"))?;
+            GeminiOAuthClient::project_id(&previous)?;
+            let credentials = if previous.is_expired(REFRESH_SKEW_SECS) {
+                let refreshed = client.refresh_credentials(&previous).await?;
+                self.store.save(&refreshed)?;
+                *guard = Some(refreshed.clone());
+                refreshed
+            } else {
+                previous
+            };
+            let ready = client.ensure_project(credentials).await?;
+            if guard.as_ref() != Some(&ready) {
+                self.store.save(&ready)?;
+                *guard = Some(ready.clone());
+            }
+            drop(guard);
+            return Ok(ready);
+        }
         // Check the shared cache first so uncontended reads avoid disk I/O and refresh traffic.
         let cached_credentials = self.cached.read().await.clone();
         if let Some(credentials) = cached_credentials {
@@ -122,6 +154,9 @@ impl TokenManager {
         if self.oauth.uses_static_bearer_token() {
             return Ok(credentials.clone());
         }
+        if let OAuthClient::Gemini(client) = &self.oauth {
+            return client.refresh_credentials(credentials).await;
+        }
         self.oauth.refresh_token(&credentials.refresh_token).await
     }
 }
@@ -131,6 +166,8 @@ impl TokenManager {
 pub enum OAuthClient {
     /// `OpenAI` Codex OAuth refresh client.
     Codex(CodexOAuthClient),
+    /// Google subscription credential refresh client.
+    Gemini(GeminiOAuthClient),
     /// xAI Grok OAuth refresh client.
     Grok(GrokOAuthClient),
     /// Kiro imported credential refresh client.
@@ -146,6 +183,7 @@ impl OAuthClient {
     const fn provider(&self) -> Provider {
         match self {
             Self::Codex(_) => Provider::Codex,
+            Self::Gemini(_) => Provider::Gemini,
             Self::Grok(_) => Provider::Grok,
             Self::Kiro(_) => Provider::Kiro,
             Self::StaticBearer { provider } => *provider,
@@ -160,6 +198,7 @@ impl OAuthClient {
     async fn refresh_token(&self, refresh_token: &str) -> Result<Credentials> {
         match self {
             Self::Codex(client) => client.refresh_token(refresh_token).await,
+            Self::Gemini(_) => Err(Error::config("Gemini refresh requires project metadata")),
             Self::Grok(client) => client.refresh_token(refresh_token).await,
             Self::Kiro(client) => client.refresh_token(refresh_token).await,
             Self::StaticBearer { provider } => Err(Error::config(format!(

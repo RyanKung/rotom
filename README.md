@@ -7,7 +7,7 @@
 [![CI](https://github.com/RyanKung/rotom/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/ci.yml)
 [![Release](https://github.com/RyanKung/rotom/actions/workflows/release.yml/badge.svg?branch=master)](https://github.com/RyanKung/rotom/actions/workflows/release.yml)
 
-Use your Codex, Grok, Kiro, or Vercel AI Gateway credentials from any tool that
+Use your Codex, Grok, Kiro, Gemini, or Vercel AI Gateway credentials from any tool that
 speaks the OpenAI or Anthropic API.
 
 rotom is a small local gateway. You log in once, run `rotom serve`, and point
@@ -53,6 +53,79 @@ claude -p "Reply with the single word OK"
 > `/v1/messages` themselves. `ANTHROPIC_AUTH_TOKEN` is your local `--api-key`,
 > not an upstream token. Use a model that `/v1/models` lists (e.g. `gpt-6-astra`).
 
+## Gemini subscription OAuth (Antigravity)
+
+The provider name remains `gemini`; Google personal subscriptions now use
+Antigravity's OAuth client and subscription backend. Old Gemini CLI tokens
+cannot be reused. Configure the Antigravity OAuth application's client ID and
+client secret locally before login or refresh. Set both `ROTOM_GEMINI_CLIENT_ID`
+and `ROTOM_GEMINI_CLIENT_SECRET`, or create `$ROTOM_HOME/gemini-oauth.json`
+(default `~/.rotom/gemini-oauth.json`, permissions `0600`):
+
+```json
+{"client_id":"YOUR_CLIENT_ID","client_secret":"YOUR_CLIENT_SECRET"}
+```
+
+These values must identify the OAuth application used to issue the saved tokens;
+they are not bundled in Rotom. Keep this file outside source control. The local
+file also lets the daemon refresh tokens without inheriting shell variables.
+Sign in with the Google account holding your plan:
+
+```bash
+rotom login --provider gemini
+rotom models --provider gemini
+rotom serve --bind 127.0.0.1:14550 --api-key local-secret
+```
+
+Paste the full `http://localhost:45289/oauth-callback?...` URL back into the
+same terminal, even if the browser shows a connection error. OAuth state and
+PKCE are checked. Tokens are saved before project setup; if provisioning fails,
+`rotom refresh --provider gemini` retries with the saved login. The persisted
+project is tagged `antigravity:` to distinguish it from legacy credentials.
+
+Use `HTTPS_PROXY` / `HTTP_PROXY` if your network requires a proxy; use the same
+proxy environment for login, refresh, model discovery, and serving. A new
+provider requires restarting an already-running daemon after login.
+
+This is a third-party direct adapter for Antigravity's client protocol, based
+on the endpoint and envelope behavior in [Magpie](https://github.com/yetone/magpie/blob/main/internal/provider/google.go),
+not a Google-supported public subscription API. Google controls account
+eligibility, quotas, and model access; Magpie notes that accounts used outside
+Antigravity may be suspended. Google's [migration guide](https://antigravity.google/docs/cli/gcli-migration/)
+describes the supported first-party client. This adapter does not rewrite client
+identity prompts or bypass thought-signature validation.
+
+Unless `models.gemini` explicitly overrides discovery, server startup/reload
+and `rotom models --provider gemini` query the account's enabled Gemini models.
+Actual upstream model IDs are preserved, including effort variants. Old model
+names work only while Google still offers them; aliases are not silently mapped
+to different models. The offline combined `rotom models` list contains fallback
+IDs and does not establish account access. `gemini/` is an optional prefix;
+`google/gemini-*` continues to route to Vercel. Global `model_aliases` work as
+with other providers; target a model returned by live discovery.
+
+Chat Completions, Responses, and Anthropic Messages share the subscription
+transport, including streaming, function tools, and inline base64 image input.
+Chat `response_format` and Responses `text.format` support `json_object` and
+`json_schema` (including `strict: true`), mapped to Gemini's native
+`responseMimeType` and Antigravity's `responseSchema` (`responseJsonSchema`
+is ignored by this backend). Local nonrecursive `$ref`/`$defs` are expanded
+and nullable type pairs become `nullable`. Constraints are not silently removed;
+unsupported schemas fail locally or upstream. Numeric enums, recursive references,
+and arbitrary union types are not supported by this adapter.
+Gemini has no separate strict switch. For `strict: true` (the default), Rotom
+validates the complete final output against the original schema before returning
+it; invalid or truncated output fails. Strict streaming buffers content until
+validation passes, increasing time to first content. `strict: false` uses native
+constraints without local output validation. External schema retrieval is disabled.
+JSON-object mode uses JSON-only instructions and local object validation; it
+also buffers content until validation passes. Invalid format envelopes fail
+instead of being ignored.
+Signed tool-call metadata stays in a project-scoped in-memory cache (4096 calls);
+a restart or eviction requires starting a new tool conversation. Remote image
+URLs and generated media are not supported. Tests use local mock servers;
+passing them does not establish real-account access.
+
 ## Logging In
 
 `rotom login` lists the providers and runs the chosen flow. Skip the prompt with
@@ -63,6 +136,7 @@ a flag:
 | OpenAI/Codex      | `rotom login --provider openai` |
 | Grok (xAI)        | `rotom login --provider grok`   |
 | Kiro              | `rotom login --kiro`            |
+| Gemini subscription | `rotom login --provider gemini` |
 | Vercel AI Gateway | `rotom login --provider vercel` |
 
 - **Codex / Grok**: browser login, then paste the redirected

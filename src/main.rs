@@ -19,9 +19,9 @@ use rotom::{
     logging::{self, LogLevel},
     models::{highlight_model_ids_for_provider, resolve_model_ids_for_provider_with_config},
     oauth::{
-        CodexOAuthClient, GrokOAuthClient, KiroAuthorizationCallback, KiroOAuthClient,
-        create_authorization_flow, default_cli_database_path, default_desktop_token_path,
-        parse_kiro_authorization_callback,
+        CodexOAuthClient, GeminiOAuthClient, GrokOAuthClient, KiroAuthorizationCallback,
+        KiroOAuthClient, create_authorization_flow, default_cli_database_path,
+        default_desktop_token_path, parse_kiro_authorization_callback,
     },
     server::{
         AppState, UpstreamState,
@@ -54,7 +54,7 @@ const DEFAULT_MODEL_FALLBACK: &str = "gpt-6-sol";
 const STATIC_BEARER_TOKEN_EXPIRY_UNIX: i64 = 4_102_444_800;
 const CLI_LONG_ABOUT: &str = "\
 rotom is a local OpenAI- and Anthropic-compatible API gateway backed by Codex,
-Grok, Kiro, or Vercel AI Gateway credentials.
+Grok, Kiro, Gemini subscriptions, or Vercel AI Gateway credentials.
 
 It helps clients that speak either the OpenAI Chat Completions API or the
 Anthropic Messages API call the selected upstream after you save provider
@@ -87,7 +87,7 @@ Examples:
 
 Environment:
   ROTOM_API_KEY          Optional local API key for server endpoints
-  ROTOM_PROVIDER         Upstream provider: codex, grok, kiro, or vercel
+  ROTOM_PROVIDER         Upstream provider: codex, grok, kiro, gemini, or vercel
   ROTOM_MODEL_FALLBACK   Fallback for unsupported Anthropic model ids
   ROTOM_AUTH_FILE        Override the credential file path
   ROTOM_HOME             Override the default config home
@@ -144,7 +144,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "Provider to authenticate: codex, grok, kiro, or vercel"
+            help = "Provider to authenticate: codex, grok, kiro, gemini, or vercel"
         )]
         provider: Option<String>,
         #[arg(
@@ -194,7 +194,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "Upstream provider to serve: codex, grok, kiro, or vercel"
+            help = "Upstream provider to serve: codex, grok, kiro, gemini, or vercel"
         )]
         provider: Option<String>,
         #[arg(
@@ -216,7 +216,7 @@ enum Command {
             long,
             env = "ROTOM_PROVIDER",
             value_name = "PROVIDER",
-            help = "Provider to refresh: codex, grok, kiro, or vercel. When omitted, refreshes all saved providers."
+            help = "Provider to refresh: codex, grok, kiro, gemini, or vercel. When omitted, refreshes all saved providers."
         )]
         provider: Option<String>,
     },
@@ -386,7 +386,7 @@ struct DaemonInstallCliOptions {
         long,
         env = "ROTOM_PROVIDER",
         value_name = "PROVIDER",
-        help = "Upstream provider to serve: codex, grok, kiro, or vercel"
+        help = "Upstream provider to serve: codex, grok, kiro, gemini, or vercel"
     )]
     provider: Option<String>,
     #[arg(
@@ -445,7 +445,7 @@ async fn run(cli: Cli) -> Result<()> {
             auth_file,
             provider,
         } => status(auth_store(auth_file)?, provider).await,
-        Command::Models { provider } => models(provider.as_deref()),
+        Command::Models { provider } => models(provider.as_deref()).await,
         Command::Kiro { command } => kiro_command(command),
         Command::Update { version } => update(version.as_deref()),
         Command::Daemon { command } => daemon_command(command, cli.verbose),

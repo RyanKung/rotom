@@ -12,6 +12,7 @@ use serde_json::Value;
 const CODEX_PRIORITY_SERVICE_TIER: &str = "priority";
 const CODEX_UPSTREAM: CodexUpstream = CodexUpstream;
 const GROK_UPSTREAM: GrokUpstream = GrokUpstream;
+const GEMINI_UPSTREAM: GeminiUpstream = GeminiUpstream;
 const KIRO_UPSTREAM: KiroUpstream = KiroUpstream;
 /// Static adapter value for Vercel AI Gateway requests.
 const VERCEL_UPSTREAM: VercelUpstream = VercelUpstream;
@@ -245,6 +246,7 @@ pub(super) fn adapter_for_provider(provider: Provider) -> &'static dyn UpstreamP
         Provider::Grok => &GROK_UPSTREAM,
         Provider::Kiro => &KIRO_UPSTREAM,
         Provider::Vercel => &VERCEL_UPSTREAM,
+        Provider::Gemini => &GEMINI_UPSTREAM,
     }
 }
 
@@ -512,6 +514,35 @@ fn normalize_codex_service_tier_value(tier: &str) -> Option<&'static str> {
 
 fn header_value(value: &str) -> Result<HeaderValue> {
     HeaderValue::from_str(value).map_err(|_| Error::config("invalid header value"))
+}
+
+struct GeminiUpstream;
+impl UpstreamProvider for GeminiUpstream {
+    fn provider(&self) -> Provider {
+        Provider::Gemini
+    }
+    fn default_base_url(&self) -> &'static str {
+        super::gemini::BASE_URL
+    }
+    fn responses_url(&self, base_url: &str) -> String {
+        format!(
+            "{}:streamGenerateContent?alt=sse",
+            base_url.trim_end_matches('/')
+        )
+    }
+    fn response_resource_url(&self, _base_url: &str, _response_id: &str) -> Option<String> {
+        None
+    }
+    fn resource_capabilities(&self) -> ResponseResourceCapabilities {
+        KIRO_UPSTREAM.resource_capabilities()
+    }
+    fn response_creation_strategy(&self) -> ResponseCreationStrategy {
+        ResponseCreationStrategy::NativeResponses
+    }
+    fn headers(&self, credentials: &Credentials) -> Result<HeaderMap> {
+        grok_headers(credentials)
+    }
+    fn prepare_request(&self, _body: &mut Value) {}
 }
 
 #[cfg(test)]
