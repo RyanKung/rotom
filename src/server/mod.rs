@@ -300,6 +300,7 @@ impl AppState {
             "xai" => Some(Provider::Grok),
             "kiro" => Some(Provider::Kiro),
             "vercel-ai-gateway" => Some(Provider::Vercel),
+            "gemini" => Some(Provider::Gemini),
             _ => None,
         }
     }
@@ -331,6 +332,7 @@ fn normalize_model_for_support(model: &str) -> String {
         .strip_prefix("xai/")
         .or_else(|| normalized.strip_prefix("grok/"))
         .or_else(|| normalized.strip_prefix("kiro/"))
+        .or_else(|| normalized.strip_prefix("gemini/"))
         .or_else(|| normalized.strip_prefix("vercel/"))
         .or_else(|| normalized.strip_prefix("anthropic/"))
         .unwrap_or(&normalized)

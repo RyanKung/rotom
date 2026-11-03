@@ -23,6 +23,9 @@ pub async fn resolve_model_list_for_upstreams(
         let models = if config.is_some_and(|config| config.models.contains_key(&upstream.provider))
         {
             resolve_model_list_for_provider_with_config(upstream.provider, config)?
+        } else if upstream.provider == Provider::Gemini {
+            let credentials = upstream.token_manager.credentials().await?;
+            upstream.client.list_gemini_models(&credentials).await?
         } else if upstream.provider == Provider::Vercel {
             match upstream.token_manager.credentials().await {
                 Ok(credentials) => match upstream.client.list_vercel_models(&credentials).await {

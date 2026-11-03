@@ -6,6 +6,7 @@ pub mod client;
 pub mod convert;
 /// Aggregates streamed Codex events into chat output state.
 pub mod events;
+mod gemini;
 mod kiro;
 mod responses_input;
 /// Parses server-sent events emitted by Codex streaming responses.

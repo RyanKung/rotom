@@ -89,6 +89,13 @@ pub fn resolve_model_ids_for_provider(provider: Provider) -> Vec<String> {
         Provider::Grok => GROK_MODELS,
         Provider::Kiro => KIRO_MODELS,
         Provider::Vercel => VERCEL_MODELS,
+        Provider::Gemini => &[
+            "gemini-2.5-pro",
+            "gemini-2.5-flash",
+            "gemini-3-pro-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+        ],
     };
     normalize_model_ids(ids.iter().map(ToString::to_string))
 }
@@ -193,6 +200,9 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
     if is_explicit_vercel_model(normalized) || is_gateway_model(normalized) {
         return Some(Provider::Vercel);
     }
+    if normalized.starts_with("gemini/") || normalized.starts_with("gemini-") {
+        return Some(Provider::Gemini);
+    }
     if normalized.starts_with("kiro/") {
         return Some(Provider::Kiro);
     }
@@ -238,7 +248,7 @@ fn is_gateway_model(model: &str) -> bool {
         && !name.is_empty()
         && !matches!(
             namespace,
-            "cursor" | "grok" | "kiro" | "openai-codex" | "xai"
+            "cursor" | "grok" | "kiro" | "gemini" | "openai-codex" | "xai"
         )
 }
 
@@ -270,6 +280,7 @@ const fn model_owner(provider: Provider) -> &'static str {
         Provider::Grok => "xai",
         Provider::Kiro => "kiro",
         Provider::Vercel => "vercel-ai-gateway",
+        Provider::Gemini => "gemini",
     }
 }
 
@@ -295,6 +306,7 @@ fn normalize_configured_model_ids(provider: Provider, ids: &[String]) -> Vec<Str
         Provider::Grok => &["xai/", "grok/"],
         Provider::Kiro => &["kiro/"],
         Provider::Vercel => &["vercel/"],
+        Provider::Gemini => &["gemini/"],
     };
     // Track names after removing only this provider's local prefix.
     let mut seen = HashSet::new();
@@ -328,6 +340,7 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
         .or_else(|| id.strip_prefix("xai/"))
         .or_else(|| id.strip_prefix("grok/"))
         .or_else(|| id.strip_prefix("kiro/"))
+        .or_else(|| id.strip_prefix("gemini/"))
         .or_else(|| id.strip_prefix("vercel/"))
         .unwrap_or(id);
 
@@ -347,6 +360,13 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
         }
         Provider::Kiro => kiro_family_rank(normalized)?,
         Provider::Vercel => vercel_family_rank(normalized)?,
+        Provider::Gemini => {
+            if normalized.contains("pro") {
+                90
+            } else {
+                70
+            }
+        }
     };
     let effort = effort_rank(normalized);
 
@@ -486,7 +506,7 @@ fn highlight_score(provider: Provider, major: u16, minor: u16, family: u16, effo
         Provider::Kiro => u32::from(family) * 1_000 + u32::from(major) * 10 + u32::from(minor),
         Provider::Grok => version_score + u32::from(family) * 10 + u32::from(effort),
         // Family strength keeps Astra ahead of Sol despite Sol's newer minor version.
-        Provider::Codex | Provider::Vercel => {
+        Provider::Codex | Provider::Vercel | Provider::Gemini => {
             version_score + u32::from(family) * 200 + u32::from(effort)
         }
     }
