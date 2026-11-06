@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(body["service_tier"], "priority");
         assert_eq!(headers["chatgpt-account-id"], "acc");
         let cache_key = body["prompt_cache_key"].as_str().unwrap();
-        assert!(!cache_key.is_empty());
+        assert_ne!(cache_key, "");
         assert_eq!(headers["session_id"], cache_key);
     }
 
@@ -798,7 +798,7 @@ mod tests {
         assert!(body.get("service_tier").is_none());
         assert_eq!(headers["authorization"], "Bearer token");
         let cache_key = body["prompt_cache_key"].as_str().unwrap();
-        assert!(!cache_key.is_empty());
+        assert_ne!(cache_key, "");
         assert_eq!(headers["x-grok-conv-id"], cache_key);
     }
 

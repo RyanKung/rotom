@@ -1380,7 +1380,7 @@ mod tests {
 
         let key1 = turn1["prompt_cache_key"].as_str().unwrap();
         let key2 = turn2["prompt_cache_key"].as_str().unwrap();
-        assert!(!key1.is_empty());
+        assert_ne!(key1, "");
         assert_eq!(key1, key2);
     }
 
