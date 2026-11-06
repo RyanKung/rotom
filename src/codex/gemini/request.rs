@@ -145,9 +145,9 @@ async fn convert_item(
             let role = required_string(item, "role")?;
             let parts = content_parts(item.get("content"))?;
             match role {
-                "system" | "developer" => system.extend(parts),
+                "system" | "developer" if contents.is_empty() => system.extend(parts),
+                "system" | "developer" | "user" => push_parts(contents, "user", parts),
                 "assistant" => push_parts(contents, "model", parts),
-                "user" => push_parts(contents, "user", parts),
                 _ => return Err(Error::config("unsupported Gemini message role")),
             }
         }

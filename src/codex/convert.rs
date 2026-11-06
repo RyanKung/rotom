@@ -105,8 +105,15 @@ fn split_messages(messages: &[ChatMessage]) -> (String, Vec<Value>) {
         .fold((Vec::new(), Vec::new()), |mut acc, (index, message)| {
             match message.role.as_str() {
                 "system" | "developer" => {
-                    if let Some(text) = message_text(message) {
-                        acc.0.push(text);
+                    if acc.1.is_empty() {
+                        if let Some(text) = message_text(message) {
+                            acc.0.push(text);
+                        }
+                    } else {
+                        acc.1.push(json!({
+                            "role": "developer",
+                            "content": content_to_input_parts(message.content.as_ref())
+                        }));
                     }
                 }
                 "user" => acc.1.push(json!({
@@ -395,9 +402,11 @@ pub fn resolve_prompt_cache_key(
     input: &[Value],
 ) -> Option<String> {
     if let Some(explicit) = explicit_cache_key(extra, metadata) {
-        return Some(normalize_cache_key(explicit));
+        let key = normalize_cache_key(explicit);
+        record_continuity_cache_key(instructions, input, &key);
+        return Some(key);
     }
-    if let Some(derived) = deterministic_conversation_cache_key(instructions, input) {
+    if let Some(derived) = continuity_or_deterministic_cache_key(instructions, input) {
         return Some(derived);
     }
     previous_response_id
@@ -460,41 +469,230 @@ fn normalize_cache_key(raw: &str) -> String {
     }
 }
 
+const MAX_CONTINUITY_ENTRIES: usize = 4096;
+const INSTRUCTION_SEED_PREFIX_CHARS: usize = 512;
+
+struct ContinuityStore {
+    order: std::collections::VecDeque<u64>,
+    map: std::collections::HashMap<u64, String>,
+}
+
+impl ContinuityStore {
+    fn new() -> Self {
+        Self {
+            order: std::collections::VecDeque::new(),
+            map: std::collections::HashMap::new(),
+        }
+    }
+
+    fn get(&self, fingerprint: u64) -> Option<String> {
+        self.map.get(&fingerprint).cloned()
+    }
+
+    fn insert(&mut self, fingerprint: u64, key: &str) {
+        if let Some(existing) = self.map.get_mut(&fingerprint) {
+            existing.clear();
+            existing.push_str(key);
+            return;
+        }
+        if self.order.len() >= MAX_CONTINUITY_ENTRIES
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.map.remove(&oldest);
+        }
+        self.order.push_back(fingerprint);
+        self.map.insert(fingerprint, key.to_owned());
+    }
+}
+
+fn continuity_store() -> &'static std::sync::Mutex<ContinuityStore> {
+    static STORE: std::sync::OnceLock<std::sync::Mutex<ContinuityStore>> =
+        std::sync::OnceLock::new();
+    STORE.get_or_init(|| std::sync::Mutex::new(ContinuityStore::new()))
+}
+
+fn continuity_or_deterministic_cache_key(instructions: &str, input: &[Value]) -> Option<String> {
+    let seed_prefix = instruction_seed_prefix(instructions, input);
+    let dialogue_hashes = dialogue_item_hashes(input);
+    let opening_fp = dialogue_hashes
+        .first()
+        .map(|first| opening_turn_fingerprint(&seed_prefix, *first));
+
+    if let Ok(store) = continuity_store().lock() {
+        if let Some(fp) = opening_fp
+            && let Some(existing) = store.get(fp)
+        {
+            drop(store);
+            record_fingerprints(&seed_prefix, opening_fp, &dialogue_hashes, &existing);
+            return Some(existing);
+        }
+        if dialogue_hashes.len() >= 2 {
+            for window in dialogue_hashes.windows(2) {
+                let bigram = pair_fingerprint(&seed_prefix, window[0], window[1]);
+                if let Some(existing) = store.get(bigram) {
+                    drop(store);
+                    record_fingerprints(&seed_prefix, opening_fp, &dialogue_hashes, &existing);
+                    return Some(existing);
+                }
+            }
+        }
+    }
+
+    let derived = deterministic_conversation_cache_key(instructions, input)?;
+    record_fingerprints(&seed_prefix, opening_fp, &dialogue_hashes, &derived);
+    Some(derived)
+}
+
+fn record_continuity_cache_key(instructions: &str, input: &[Value], key: &str) {
+    let seed_prefix = instruction_seed_prefix(instructions, input);
+    let dialogue_hashes = dialogue_item_hashes(input);
+    let opening_fp = dialogue_hashes
+        .first()
+        .map(|first| opening_turn_fingerprint(&seed_prefix, *first));
+    record_fingerprints(&seed_prefix, opening_fp, &dialogue_hashes, key);
+}
+
+fn record_fingerprints(
+    seed_prefix: &str,
+    opening_fp: Option<u64>,
+    dialogue_hashes: &[u64],
+    key: &str,
+) {
+    let Ok(mut store) = continuity_store().lock() else {
+        return;
+    };
+    if let Some(fp) = opening_fp {
+        store.insert(fp, key);
+    }
+    for window in dialogue_hashes.windows(2) {
+        store.insert(pair_fingerprint(seed_prefix, window[0], window[1]), key);
+    }
+}
+
+fn dialogue_item_hashes(input: &[Value]) -> Vec<u64> {
+    input
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            )
+        })
+        .map(|item| {
+            let mut clean = item.clone();
+            strip_unsupported_keys(&mut clean);
+            if let Some(object) = clean.as_object_mut() {
+                object.remove("id");
+                object.remove("status");
+            }
+            hash_u64(clean.to_string().as_bytes())
+        })
+        .collect()
+}
+
+fn opening_turn_fingerprint(seed_prefix: &str, first_dialogue_hash: u64) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"opening:");
+    hasher.update(seed_prefix.as_bytes());
+    hasher.update(b":");
+    hasher.update(first_dialogue_hash.to_be_bytes());
+    digest_u64(&hasher.finalize())
+}
+
+fn pair_fingerprint(seed_prefix: &str, first: u64, second: u64) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"pair:");
+    hasher.update(seed_prefix.as_bytes());
+    hasher.update(b":");
+    hasher.update(first.to_be_bytes());
+    hasher.update(second.to_be_bytes());
+    digest_u64(&hasher.finalize())
+}
+
+fn hash_u64(bytes: &[u8]) -> u64 {
+    digest_u64(&Sha256::digest(bytes))
+}
+
+fn digest_u64(digest: &[u8]) -> u64 {
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes)
+}
+
+fn instruction_seed_prefix(instructions: &str, input: &[Value]) -> String {
+    let trimmed = instructions.trim();
+    if !trimmed.is_empty() {
+        return trimmed
+            .chars()
+            .take(INSTRUCTION_SEED_PREFIX_CHARS)
+            .collect();
+    }
+    if let Some(first_dev) = input.first().filter(|item| {
+        matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("developer" | "system")
+        )
+    }) {
+        let mut clean = first_dev.clone();
+        strip_unsupported_keys(&mut clean);
+        return clean
+            .to_string()
+            .chars()
+            .take(INSTRUCTION_SEED_PREFIX_CHARS)
+            .collect();
+    }
+    String::new()
+}
+
 fn deterministic_conversation_cache_key(instructions: &str, input: &[Value]) -> Option<String> {
     let mut hasher = Sha256::new();
     let mut has_seed = false;
 
     let trimmed_instructions = instructions.trim();
     if !trimmed_instructions.is_empty() {
+        let prefix: String = trimmed_instructions
+            .chars()
+            .take(INSTRUCTION_SEED_PREFIX_CHARS)
+            .collect();
         hasher.update(b"instructions:");
-        hasher.update(trimmed_instructions.as_bytes());
+        hasher.update(prefix.as_bytes());
+        hasher.update(b"\n");
+        has_seed = true;
+    } else if let Some(first_dev) = input.first().filter(|item| {
+        matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("developer" | "system")
+        )
+    }) {
+        let mut clean = first_dev.clone();
+        strip_unsupported_keys(&mut clean);
+        let prefix: String = clean
+            .to_string()
+            .chars()
+            .take(INSTRUCTION_SEED_PREFIX_CHARS)
+            .collect();
+        hasher.update(b"dev:");
+        hasher.update(prefix.as_bytes());
         hasher.update(b"\n");
         has_seed = true;
     }
 
-    for item in input {
-        if matches!(
-            item.get("role").and_then(Value::as_str),
-            Some("developer" | "system")
-        ) {
-            let mut clean = item.clone();
-            strip_unsupported_keys(&mut clean);
-            hasher.update(b"dev:");
-            hasher.update(clean.to_string().as_bytes());
-            hasher.update(b"\n");
-            has_seed = true;
-        } else {
-            break;
-        }
-    }
-
-    if let Some(first_user) = input
+    if let Some(first_dialogue) = input
         .iter()
-        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .find(|item| {
+            matches!(
+                item.get("role").and_then(Value::as_str),
+                Some("user" | "assistant")
+            )
+        })
         .or_else(|| input.first())
     {
-        let mut clean = first_user.clone();
+        let mut clean = first_dialogue.clone();
         strip_unsupported_keys(&mut clean);
+        if let Some(object) = clean.as_object_mut() {
+            object.remove("id");
+            object.remove("status");
+        }
         hasher.update(b"first:");
         hasher.update(clean.to_string().as_bytes());
         has_seed = true;
@@ -1424,5 +1622,78 @@ mod tests {
         assert!(grok.get("prompt_cache_retention").is_none());
         assert_eq!(codex["prompt_cache_key"], "conv-123");
         assert!(codex.get("prompt_cache_retention").is_none());
+    }
+
+    #[test]
+    fn keeps_trailing_depth_system_messages_in_input_to_preserve_prefix_cache() {
+        let turn1 = to_codex_request(&request(json!({
+            "model": "grok-4.3",
+            "messages": [
+                {"role": "system", "content": "main system prompt"},
+                {"role": "system", "content": "character card"},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+                {"role": "system", "content": "[Depth 2 World Info: tavern]"},
+                {"role": "user", "content": "look around"},
+                {"role": "system", "content": "[Post-History Instructions: stay in character]"}
+            ]
+        })))
+        .unwrap();
+
+        assert_eq!(
+            turn1["instructions"],
+            "main system prompt\n\ncharacter card"
+        );
+        let input = turn1["input"].as_array().unwrap();
+        assert_eq!(input.len(), 5);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[1]["role"], "assistant");
+        assert_eq!(input[2]["role"], "developer");
+        assert_eq!(
+            input[2]["content"][0]["text"],
+            "[Depth 2 World Info: tavern]"
+        );
+        assert_eq!(input[3]["role"], "user");
+        assert_eq!(input[4]["role"], "developer");
+        assert_eq!(
+            input[4]["content"][0]["text"],
+            "[Post-History Instructions: stay in character]"
+        );
+    }
+
+    #[test]
+    fn preserves_prompt_cache_key_across_sliding_window_truncation() {
+        let turn1 = to_codex_request(&request(json!({
+            "model": "grok-4.3",
+            "messages": [
+                {"role": "system", "content": "stable character card prefix"},
+                {"role": "user", "content": "turn 1 user"},
+                {"role": "assistant", "content": "turn 1 assistant"},
+                {"role": "user", "content": "turn 2 user"},
+                {"role": "assistant", "content": "turn 2 assistant"},
+                {"role": "user", "content": "turn 3 user"}
+            ]
+        })))
+        .unwrap();
+
+        // Turn 2 simulates SillyTavern sliding window dropping turn 1 (oldest messages)
+        // when the 71.9K context limit is reached.
+        let turn2 = to_codex_request(&request(json!({
+            "model": "grok-4.3",
+            "messages": [
+                {"role": "system", "content": "stable character card prefix"},
+                {"role": "user", "content": "turn 2 user"},
+                {"role": "assistant", "content": "turn 2 assistant"},
+                {"role": "user", "content": "turn 3 user"},
+                {"role": "assistant", "content": "turn 3 assistant"},
+                {"role": "user", "content": "turn 4 user"}
+            ]
+        })))
+        .unwrap();
+
+        let key1 = turn1["prompt_cache_key"].as_str().unwrap();
+        let key2 = turn2["prompt_cache_key"].as_str().unwrap();
+        assert_ne!(key1, "");
+        assert_eq!(key1, key2);
     }
 }

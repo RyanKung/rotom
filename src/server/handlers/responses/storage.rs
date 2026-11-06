@@ -395,11 +395,18 @@ pub(in crate::server::handlers) fn parse_upstream_usage(value: Option<&Value>) -
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .unwrap_or_else(|| prompt_tokens.saturating_add(completion_tokens));
+    let cached_tokens = value
+        .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| value.pointer("/prompt_tokens_details/cached_tokens"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
 
     Some(Usage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        prompt_tokens_details: cached_tokens
+            .map(|cached_tokens| crate::openai::response::PromptTokensDetails { cached_tokens }),
     })
 }
 

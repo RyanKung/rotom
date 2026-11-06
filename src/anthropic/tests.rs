@@ -1,4 +1,5 @@
 use super::*;
+use crate::openai::response::Usage;
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -276,6 +277,7 @@ fn converts_openai_response_to_anthropic_message() {
             prompt_tokens: 10,
             completion_tokens: 4,
             total_tokens: 14,
+            prompt_tokens_details: None,
         }),
     };
 
