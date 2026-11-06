@@ -66,8 +66,15 @@ pub struct AssistantMessage {
     pub images: Option<Vec<GeneratedImage>>,
 }
 
+/// Breakdown of prompt token accounting reported by the upstream provider.
+#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct PromptTokensDetails {
+    /// Prompt tokens served from the upstream prefix cache.
+    pub cached_tokens: u32,
+}
+
 /// Token usage metadata reported by the upstream provider.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, PartialEq, Eq)]
 pub struct Usage {
     /// Tokens consumed by the prompt.
     pub prompt_tokens: u32,
@@ -75,6 +82,9 @@ pub struct Usage {
     pub completion_tokens: u32,
     /// Total tokens consumed by the request.
     pub total_tokens: u32,
+    /// Optional breakdown of prompt tokens, including cached prefix tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 /// OpenAI-compatible Responses API object.

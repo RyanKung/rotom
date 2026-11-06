@@ -281,11 +281,23 @@ pub(in crate::server::handlers) fn collect_response_input_items(
 }
 
 fn response_input_items_to_chat_messages(input_items: &[Value]) -> Vec<ChatMessage> {
-    input_items
+    let mut compaction_messages = Vec::new();
+    let mut messages = Vec::new();
+    for item in input_items
         .iter()
         .filter_map(|item| serde_json::from_value::<ResponseInputItem>(item.clone()).ok())
-        .filter_map(|item| response_input_item_to_chat_message(&item))
-        .collect()
+    {
+        let is_compaction = matches!(item, ResponseInputItem::Compaction(_));
+        if let Some(message) = response_input_item_to_chat_message(&item) {
+            if is_compaction {
+                compaction_messages.push(message);
+            } else {
+                messages.push(message);
+            }
+        }
+    }
+    compaction_messages.extend(messages);
+    compaction_messages
 }
 
 fn response_input_item_to_chat_message(item: &ResponseInputItem) -> Option<ChatMessage> {
@@ -551,6 +563,17 @@ fn anthropic_system_items(system: &SystemPrompt) -> Vec<Value> {
 
 fn anthropic_message_items(message: &Message) -> Vec<Value> {
     match (&message.role[..], &message.content) {
+        ("system" | "developer", MessageContent::Text(text)) => {
+            crate::anthropic::sanitize_system_text(text)
+                .map(|text| {
+                    let content = vec![json!({"type": "input_text", "text": text})];
+                    vec![raw_message_item("developer", &content)]
+                })
+                .unwrap_or_default()
+        }
+        ("system" | "developer", MessageContent::Blocks(blocks)) => {
+            anthropic_input_block_items("developer", blocks)
+        }
         ("user", MessageContent::Text(text)) => {
             let content = vec![json!({"type": "input_text", "text": text})];
             vec![raw_message_item("user", &content)]
@@ -561,18 +584,18 @@ fn anthropic_message_items(message: &Message) -> Vec<Value> {
             "content": [{"type": "output_text", "text": text, "annotations": []}],
             "status": "completed"
         })],
-        ("user", MessageContent::Blocks(blocks)) => anthropic_user_block_items(blocks),
+        ("user", MessageContent::Blocks(blocks)) => anthropic_input_block_items("user", blocks),
         ("assistant", MessageContent::Blocks(blocks)) => anthropic_assistant_block_items(blocks),
         _ => Vec::new(),
     }
 }
 
-fn anthropic_user_block_items(blocks: &[ContentBlock]) -> Vec<Value> {
+fn anthropic_input_block_items(role: &str, blocks: &[ContentBlock]) -> Vec<Value> {
     let mut items = Vec::new();
     let mut parts = Vec::new();
     for block in blocks {
         if block.kind == "tool_result" {
-            flush_raw_message_item(&mut items, "user", &mut parts);
+            flush_raw_message_item(&mut items, role, &mut parts);
             // Responses has no is_error field, so carry the failure in tool-visible text.
             let output = anthropic_tool_result_text(block.content.as_ref());
             let output = if block.is_error == Some(true) {
@@ -593,7 +616,7 @@ fn anthropic_user_block_items(blocks: &[ContentBlock]) -> Vec<Value> {
             parts.push(part);
         }
     }
-    flush_raw_message_item(&mut items, "user", &mut parts);
+    flush_raw_message_item(&mut items, role, &mut parts);
     items
 }
 

@@ -450,11 +450,18 @@ fn parse_usage(value: Option<&Value>) -> Option<Usage> {
             || Some(prompt_tokens.saturating_add(completion_tokens)),
             |value| u32::try_from(value).ok(),
         )?;
+    let cached_tokens = usage
+        .pointer("/input_tokens_details/cached_tokens")
+        .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
 
     Some(Usage {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        prompt_tokens_details: cached_tokens
+            .map(|cached_tokens| crate::openai::response::PromptTokensDetails { cached_tokens }),
     })
 }
 
@@ -703,5 +710,31 @@ mod tests {
             response["incomplete_details"]["reason"],
             "max_output_tokens"
         );
+    }
+
+    #[test]
+    fn extracts_cached_tokens_into_prompt_tokens_details() {
+        let mut output = ChatOutput::default();
+        apply_event(
+            &mut output,
+            &json!({
+                "type": "response.completed",
+                "response": {
+                    "usage": {
+                        "input_tokens": 71900,
+                        "output_tokens": 300,
+                        "total_tokens": 72200,
+                        "input_tokens_details": {
+                            "cached_tokens": 70000
+                        }
+                    }
+                }
+            }),
+        )
+        .unwrap();
+
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 71900);
+        assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, 70000);
     }
 }

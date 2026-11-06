@@ -8,7 +8,7 @@ use crate::{
     Error, Result,
     openai::{
         response::{
-            ChatCompletionResponse, ResponseObject, Usage, generated_images_from_output,
+            ChatCompletionResponse, ResponseObject, generated_images_from_output,
             generated_images_from_response_items,
         },
         types::{
@@ -117,11 +117,7 @@ pub fn from_openai_response(response: ChatCompletionResponse) -> MessageResponse
         });
     }
 
-    let usage = response.usage.unwrap_or(Usage {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-    });
+    let usage = response.usage.unwrap_or_default();
 
     MessageResponse {
         id: response.id.replace("chatcmpl", "msg"),
@@ -134,7 +130,9 @@ pub fn from_openai_response(response: ChatCompletionResponse) -> MessageResponse
         usage: ResponseUsage {
             input_tokens: usage.prompt_tokens,
             cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            cache_read_input_tokens: usage
+                .prompt_tokens_details
+                .map(|details| details.cached_tokens),
             output_tokens: usage.completion_tokens,
             server_tool_use: None,
         },
@@ -196,11 +194,7 @@ pub fn from_openai_response_object(response: ResponseObject) -> MessageResponse 
     }
 
     let stop_reason = response_stop_reason(&response);
-    let usage = response.usage.unwrap_or(Usage {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-    });
+    let usage = response.usage.unwrap_or_default();
 
     MessageResponse {
         id: response.id.replace("resp", "msg"),
@@ -213,7 +207,9 @@ pub fn from_openai_response_object(response: ResponseObject) -> MessageResponse 
         usage: ResponseUsage {
             input_tokens: usage.prompt_tokens,
             cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            cache_read_input_tokens: usage
+                .prompt_tokens_details
+                .map(|details| details.cached_tokens),
             output_tokens: usage.completion_tokens,
             server_tool_use: None,
         },

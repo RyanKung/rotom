@@ -12,7 +12,9 @@ pub(super) fn normalize(input: &[Value]) -> NormalizedResponsesInput {
     };
 
     for item in input {
-        if let Some(instruction) = instruction_from_input_item(item) {
+        if normalized.items.is_empty()
+            && let Some(instruction) = instruction_from_input_item(item)
+        {
             normalized.instructions.push(instruction);
         } else {
             normalized.items.push(normalize_input_item(item));
@@ -82,11 +84,15 @@ fn normalize_input_item(item: &Value) -> Value {
     }
 
     if object.get("type").and_then(Value::as_str) == Some("message") {
-        let role = object
+        let mut role = object
             .get("role")
             .and_then(Value::as_str)
             .unwrap_or("user")
             .to_owned();
+        if role == "system" {
+            "developer".clone_into(&mut role);
+            object.insert("role".to_owned(), Value::String(role.clone()));
+        }
         if let Some(content) = object.get_mut("content") {
             normalize_message_content(content, &role);
         }
