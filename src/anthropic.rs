@@ -923,6 +923,8 @@ fn parse_anthropic_usage_value(value: &Value) -> Option<ResponseUsage> {
             .and_then(|value| u32::try_from(value).ok()),
         cache_read_input_tokens: value
             .get("cache_read_input_tokens")
+            .or_else(|| value.pointer("/input_tokens_details/cached_tokens"))
+            .or_else(|| value.pointer("/prompt_tokens_details/cached_tokens"))
             .and_then(Value::as_u64)
             .and_then(|value| u32::try_from(value).ok()),
         output_tokens: completion_tokens,

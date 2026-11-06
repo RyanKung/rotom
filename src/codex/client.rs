@@ -600,7 +600,7 @@ impl CodexClient {
         let response = self
             .http
             .post(&url)
-            .headers(upstream.headers(credentials)?)
+            .headers(upstream.request_headers(credentials, &upstream_body)?)
             .json(&upstream_body)
             .send()
             .await?;

@@ -371,6 +371,34 @@ fn builds_kiro_payload_from_anthropic_converted_blocks() {
 }
 
 #[test]
+fn kiro_conversation_id_stays_stable_across_turns_without_explicit_id() {
+    let turn1 = json!({
+        "model": "claude-sonnet-4.5",
+        "instructions": "be concise",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello claude"}]}
+        ]
+    });
+    let turn2 = json!({
+        "model": "claude-sonnet-4.5",
+        "instructions": "be concise",
+        "input": [
+            {"role": "user", "content": [{"type": "input_text", "text": "hello claude"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "hi"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+        ]
+    });
+
+    let payload1 = to_kiro_payload(&turn1, &credentials()).unwrap();
+    let payload2 = to_kiro_payload(&turn2, &credentials()).unwrap();
+
+    assert_eq!(
+        payload1["conversationState"]["conversationId"],
+        payload2["conversationState"]["conversationId"]
+    );
+}
+
+#[test]
 fn maps_kiro_tool_events_to_responses_function_call() {
     let request = json!({"model": "claude-sonnet-4.5", "input": "use lookup"});
     let mut state = KiroStreamState::new(request);

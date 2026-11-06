@@ -70,6 +70,10 @@ pub(super) trait UpstreamProvider: Sync {
 
     fn headers(&self, credentials: &Credentials) -> Result<HeaderMap>;
 
+    fn request_headers(&self, credentials: &Credentials, _body: &Value) -> Result<HeaderMap> {
+        self.headers(credentials)
+    }
+
     fn prepare_request(&self, body: &mut Value);
 }
 
@@ -109,7 +113,19 @@ impl UpstreamProvider for CodexUpstream {
         codex_headers(credentials)
     }
 
+    fn request_headers(&self, credentials: &Credentials, body: &Value) -> Result<HeaderMap> {
+        let mut headers = codex_headers(credentials)?;
+        if let Some(cache_key) = prompt_cache_key_from_body(body) {
+            headers.insert(
+                HeaderName::from_static("session_id"),
+                header_value(cache_key)?,
+            );
+        }
+        Ok(headers)
+    }
+
     fn prepare_request(&self, body: &mut Value) {
+        ensure_prompt_cache_key(body);
         remove_codex_unsupported_keys(body);
     }
 }
@@ -153,8 +169,20 @@ impl UpstreamProvider for GrokUpstream {
         grok_headers(credentials)
     }
 
+    fn request_headers(&self, credentials: &Credentials, body: &Value) -> Result<HeaderMap> {
+        let mut headers = grok_headers(credentials)?;
+        if let Some(conv_id) = prompt_cache_key_from_body(body) {
+            headers.insert(
+                HeaderName::from_static("x-grok-conv-id"),
+                header_value(conv_id)?,
+            );
+        }
+        Ok(headers)
+    }
+
     fn prepare_request(&self, body: &mut Value) {
         strip_model_prefix(body, &["xai/", "grok/"]);
+        ensure_prompt_cache_key(body);
         remove_grok_unsupported_keys(body);
     }
 }
@@ -237,6 +265,7 @@ impl UpstreamProvider for VercelUpstream {
 
     fn prepare_request(&self, body: &mut Value) {
         strip_model_prefix(body, &["vercel/"]);
+        ensure_prompt_cache_key(body);
     }
 }
 
@@ -449,9 +478,32 @@ fn grok_auth_headers(credentials: &Credentials) -> Result<HeaderMap> {
     Ok(headers)
 }
 
+fn ensure_prompt_cache_key(body: &mut Value) {
+    let resolved = crate::codex::convert::cache_key_from_request_value(body);
+    if let Some(object) = body.as_object_mut() {
+        object.remove("rotom_session_id");
+        let missing = object
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty());
+        if missing && let Some(cache_key) = resolved {
+            object.insert("prompt_cache_key".to_owned(), Value::String(cache_key));
+        }
+    }
+}
+
+fn prompt_cache_key_from_body(body: &Value) -> Option<&str> {
+    body.get("prompt_cache_key")
+        .or_else(|| body.get("conversation_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn remove_grok_unsupported_keys(body: &mut Value) {
     if let Some(object) = body.as_object_mut() {
         object.remove("service_tier");
+        object.remove("prompt_cache_retention");
         let has_tools = object
             .get("tools")
             .and_then(Value::as_array)
@@ -468,6 +520,7 @@ fn remove_codex_unsupported_keys(body: &mut Value) {
         object.remove("top_p");
         object.remove("max_output_tokens");
         object.remove("stop");
+        object.remove("prompt_cache_retention");
         normalize_codex_service_tier(object);
     }
 }
@@ -657,7 +710,7 @@ mod tests {
         };
 
         adapter.prepare_request(&mut body);
-        let headers = adapter.headers(&credentials).unwrap();
+        let headers = adapter.request_headers(&credentials, &body).unwrap();
 
         assert_eq!(adapter.provider(), Provider::Codex);
         assert_eq!(adapter.default_base_url(), DEFAULT_CODEX_BASE_URL);
@@ -684,6 +737,9 @@ mod tests {
         assert!(body.get("stop").is_none());
         assert_eq!(body["service_tier"], "priority");
         assert_eq!(headers["chatgpt-account-id"], "acc");
+        let cache_key = body["prompt_cache_key"].as_str().unwrap();
+        assert_ne!(cache_key, "");
+        assert_eq!(headers["session_id"], cache_key);
     }
 
     #[test]
@@ -709,7 +765,7 @@ mod tests {
         };
 
         adapter.prepare_request(&mut body);
-        let headers = adapter.headers(&credentials).unwrap();
+        let headers = adapter.request_headers(&credentials, &body).unwrap();
 
         assert_eq!(adapter.provider(), Provider::Grok);
         assert_eq!(adapter.default_base_url(), XAI_API_BASE_URL);
@@ -741,6 +797,9 @@ mod tests {
         assert_eq!(body["tool_choice"], "auto");
         assert!(body.get("service_tier").is_none());
         assert_eq!(headers["authorization"], "Bearer token");
+        let cache_key = body["prompt_cache_key"].as_str().unwrap();
+        assert_ne!(cache_key, "");
+        assert_eq!(headers["x-grok-conv-id"], cache_key);
     }
 
     #[test]
