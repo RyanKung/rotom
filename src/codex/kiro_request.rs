@@ -600,10 +600,13 @@ fn non_empty_content(content: &str) -> String {
 fn conversation_id_from_request(request: &Value) -> String {
     request
         .get("conversation_id")
+        .or_else(|| request.get("prompt_cache_key"))
         .or_else(|| request.get("previous_response_id"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .map_or_else(random_conversation_id, str::to_owned)
+        .map(str::to_owned)
+        .or_else(|| crate::codex::convert::cache_key_from_request_value(request))
+        .unwrap_or_else(random_conversation_id)
 }
 
 fn random_conversation_id() -> String {

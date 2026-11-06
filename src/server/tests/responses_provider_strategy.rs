@@ -206,7 +206,15 @@ async fn grok_continuation_uses_upstream_previous_response_id() {
     .await;
     assert_eq!(second.status(), StatusCode::OK);
 
-    let (captured_len, previous_response_id, input_len, input_text, has_instructions) = {
+    let (
+        captured_len,
+        previous_response_id,
+        input_len,
+        input_text,
+        has_instructions,
+        first_cache_key,
+        second_cache_key,
+    ) = {
         let captured = captured.lock().await;
         let input = captured[1]["input"].as_array().unwrap();
         (
@@ -215,6 +223,8 @@ async fn grok_continuation_uses_upstream_previous_response_id() {
             input.len(),
             input[0]["content"][0]["text"].clone(),
             captured[1].get("instructions").is_some(),
+            captured[0]["prompt_cache_key"].clone(),
+            captured[1]["prompt_cache_key"].clone(),
         )
     };
     assert_eq!(captured_len, 2);
@@ -222,6 +232,8 @@ async fn grok_continuation_uses_upstream_previous_response_id() {
     assert_eq!(input_len, 1);
     assert_eq!(input_text, "second");
     assert!(!has_instructions);
+    assert!(first_cache_key.as_str().is_some_and(|key| !key.is_empty()));
+    assert_eq!(first_cache_key, second_cache_key);
 }
 
 #[tokio::test]

@@ -73,6 +73,32 @@ fn trace_named_tools(event: &str, tools: &[String]) {
     }
 }
 
+fn apply_session_headers(headers: &HeaderMap, extra: &mut serde_json::Map<String, Value>) {
+    if extra.contains_key("rotom_session_id") {
+        return;
+    }
+    for name in [
+        "x-grok-conv-id",
+        "session_id",
+        "x-session-id",
+        "conversation_id",
+        "x-conversation-id",
+    ] {
+        if let Some(value) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            extra.insert(
+                "rotom_session_id".to_owned(),
+                Value::String(value.to_owned()),
+            );
+            break;
+        }
+    }
+}
+
 fn anthropic_tool_names(request: &MessagesRequest) -> Vec<String> {
     request.tools.as_ref().map_or_else(Vec::new, |tools| {
         tools.iter().map(|tool| tool.name.clone()).collect()
@@ -191,6 +217,18 @@ async fn run_raw_response(
     let mut upstream_request = request.clone();
     if !use_upstream_previous {
         upstream_request.previous_response_id = None;
+    } else if !upstream_request.extra.contains_key("rotom_session_id")
+        && let Some(cache_key) = crate::codex::convert::resolve_prompt_cache_key(
+            &request.extra,
+            request.metadata.as_ref(),
+            request.extra.get("user").and_then(Value::as_str),
+            request.instructions.as_deref().unwrap_or_default(),
+            &storage_input_items,
+        )
+    {
+        upstream_request
+            .extra
+            .insert("rotom_session_id".to_owned(), Value::String(cache_key));
     }
     let body = match responses_to_upstream_request(
         upstream.provider,
@@ -306,6 +344,7 @@ pub async fn responses(
     Json(mut request): Json<ResponsesRequest>,
 ) -> Response {
     state.rewrite_model(&mut request.model);
+    apply_session_headers(&headers, &mut request.extra);
     trace_request("responses", &request);
     trace_named_tools("responses_tools_inbound", &responses_tool_names(&request));
     if let Err(error) = authorize(&headers, state.api_key.as_deref()) {
@@ -478,6 +517,7 @@ pub async fn chat_completions(
     Json(mut request): Json<ChatCompletionRequest>,
 ) -> Response {
     state.rewrite_model(&mut request.model);
+    apply_session_headers(&headers, &mut request.extra);
     trace_request("chat_completions", &request);
     if let Err(error) = authorize(&headers, state.api_key.as_deref()) {
         return error.into_response();
@@ -521,6 +561,7 @@ pub async fn messages(
     }
 
     apply_anthropic_headers(&headers, &mut request);
+    apply_session_headers(&headers, &mut request.extra);
 
     let Some(upstream) = state.upstream_for_model(&request.model) else {
         return anthropic_error_response(&Error::config(format!(
@@ -630,6 +671,7 @@ pub async fn count_message_tokens(
     }
 
     apply_anthropic_headers(&headers, &mut request);
+    apply_session_headers(&headers, &mut request.extra);
     let input_tokens = anthropic_responses_request(&request)
         .and_then(|response_request| {
             collect_response_input_items(&response_request, None)
@@ -656,6 +698,7 @@ pub async fn create_message_batch(
     for item in &mut request.requests {
         state.rewrite_model(&mut item.params.model);
         apply_anthropic_headers(&headers, &mut item.params);
+        apply_session_headers(&headers, &mut item.params.extra);
     }
 
     let batch_id = build_batch_id();

@@ -7,7 +7,10 @@ use crate::{
         ResponsesRequest,
     },
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
+
+const MAX_CACHE_KEY_LEN: usize = 64;
 
 /// Normalizes model IDs by removing the `openai-codex/` prefix when present.
 #[must_use]
@@ -25,6 +28,7 @@ pub fn normalize_model(model: &str) -> String {
 /// Returns an error when a function tool omits its function metadata.
 pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
     let (instructions, input) = split_messages(&request.messages);
+    let cache_key = resolve_prompt_cache_key(&request.extra, None, None, &instructions, &input);
     let mut body = json!({
         "model": normalize_model(&request.model),
         "store": false,
@@ -36,6 +40,7 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
         "tool_choice": convert_tool_choice(request.tool_choice.as_ref()).unwrap_or_else(|| json!("auto")),
         "parallel_tool_calls": request.parallel_tool_calls.unwrap_or(true)
     });
+    insert_optional(&mut body, "prompt_cache_key", cache_key.map(Value::String));
 
     insert_optional(
         &mut body,
@@ -63,7 +68,8 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
         });
     }
 
-    if crate::models::provider_for_model(&request.model) == Some(Provider::Gemini) {
+    let inferred_provider = crate::models::provider_for_model(&request.model);
+    if inferred_provider == Some(Provider::Gemini) {
         insert_optional(
             &mut body,
             "temperature",
@@ -77,6 +83,13 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
                 .max_completion_tokens
                 .or(request.max_tokens)
                 .map(Value::from),
+        );
+    }
+    if inferred_provider == Some(Provider::Vercel) {
+        insert_optional(
+            &mut body,
+            "prompt_cache_retention",
+            request.extra.get("prompt_cache_retention").cloned(),
         );
     }
 
@@ -273,6 +286,13 @@ pub fn responses_to_upstream_request(
         request.instructions.as_deref(),
         &normalized.instructions,
     );
+    let cache_key = resolve_prompt_cache_key(
+        &request.extra,
+        request.metadata.as_ref(),
+        request.previous_response_id.as_deref(),
+        &instructions,
+        &input,
+    );
     let stream = upstream_stream_value(provider, request);
     let store = upstream_store_value(provider, request, &input);
     let text = request.extra.get("text").cloned().unwrap_or_else(|| {
@@ -296,6 +316,7 @@ pub fn responses_to_upstream_request(
     if should_include_instructions(provider, request, &instructions) {
         body["instructions"] = Value::String(instructions);
     }
+    insert_optional(&mut body, "prompt_cache_key", cache_key.map(Value::String));
 
     insert_optional(
         &mut body,
@@ -327,10 +348,191 @@ pub fn responses_to_upstream_request(
             request.previous_response_id.clone().map(Value::from),
         );
     }
+    if provider == Provider::Vercel {
+        insert_optional(
+            &mut body,
+            "prompt_cache_retention",
+            request.extra.get("prompt_cache_retention").cloned(),
+        );
+    }
 
     strip_unsupported_keys(&mut body);
 
     Ok(body)
+}
+
+/// Resolves or deterministically derives a conversation-stable cache/session key
+/// from a raw JSON request body.
+#[must_use]
+pub fn cache_key_from_request_value(body: &Value) -> Option<String> {
+    let object = body.as_object()?;
+    let metadata = object.get("metadata").and_then(Value::as_object);
+    let previous_response_id = object.get("previous_response_id").and_then(Value::as_str);
+    let instructions = object
+        .get("instructions")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let input = match object.get("input") {
+        Some(Value::Array(items)) => items.clone(),
+        Some(Value::String(text)) => vec![json!({
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": text}]
+        })],
+        _ => Vec::new(),
+    };
+    resolve_prompt_cache_key(object, metadata, previous_response_id, instructions, &input)
+}
+
+/// Resolves a conversation-stable prompt cache key from explicit request metadata
+/// or deterministically hashes the conversation's opening context.
+#[must_use]
+pub fn resolve_prompt_cache_key(
+    extra: &Map<String, Value>,
+    metadata: Option<&Map<String, Value>>,
+    previous_response_id: Option<&str>,
+    instructions: &str,
+    input: &[Value],
+) -> Option<String> {
+    if let Some(explicit) = explicit_cache_key(extra, metadata) {
+        return Some(normalize_cache_key(explicit));
+    }
+    if let Some(derived) = deterministic_conversation_cache_key(instructions, input) {
+        return Some(derived);
+    }
+    previous_response_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_cache_key)
+}
+
+fn explicit_cache_key<'a>(
+    extra: &'a Map<String, Value>,
+    metadata: Option<&'a Map<String, Value>>,
+) -> Option<&'a str> {
+    for key in [
+        "rotom_session_id",
+        "prompt_cache_key",
+        "conversation_id",
+        "session_id",
+    ] {
+        if let Some(value) = non_empty_str(extra.get(key)) {
+            return Some(value);
+        }
+    }
+
+    let meta = metadata.or_else(|| extra.get("metadata").and_then(Value::as_object));
+    if let Some(meta) = meta {
+        for key in ["session_id", "conversation_id", "prompt_cache_key"] {
+            if let Some(value) = non_empty_str(meta.get(key)) {
+                return Some(value);
+            }
+        }
+        if let Some(user_id) = non_empty_str(meta.get("user_id")) {
+            if let Some((_, session)) = user_id.rsplit_once("_session_") {
+                let session = session.trim();
+                if !session.is_empty() {
+                    return Some(session);
+                }
+            }
+            return Some(user_id);
+        }
+    }
+
+    non_empty_str(extra.get("user"))
+}
+
+fn non_empty_str(value: Option<&Value>) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_cache_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if (1..=MAX_CACHE_KEY_LEN).contains(&trimmed.len())
+        && trimmed.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+    {
+        trimmed.to_owned()
+    } else {
+        uuid_from_seed(trimmed.as_bytes())
+    }
+}
+
+fn deterministic_conversation_cache_key(instructions: &str, input: &[Value]) -> Option<String> {
+    let mut hasher = Sha256::new();
+    let mut has_seed = false;
+
+    let trimmed_instructions = instructions.trim();
+    if !trimmed_instructions.is_empty() {
+        hasher.update(b"instructions:");
+        hasher.update(trimmed_instructions.as_bytes());
+        hasher.update(b"\n");
+        has_seed = true;
+    }
+
+    for item in input {
+        if matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("developer" | "system")
+        ) {
+            let mut clean = item.clone();
+            strip_unsupported_keys(&mut clean);
+            hasher.update(b"dev:");
+            hasher.update(clean.to_string().as_bytes());
+            hasher.update(b"\n");
+            has_seed = true;
+        } else {
+            break;
+        }
+    }
+
+    if let Some(first_user) = input
+        .iter()
+        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .or_else(|| input.first())
+    {
+        let mut clean = first_user.clone();
+        strip_unsupported_keys(&mut clean);
+        hasher.update(b"first:");
+        hasher.update(clean.to_string().as_bytes());
+        has_seed = true;
+    }
+
+    has_seed.then(|| format_digest_as_uuid(&hasher.finalize()))
+}
+
+fn uuid_from_seed(seed: &[u8]) -> String {
+    let digest = Sha256::digest(seed);
+    format_digest_as_uuid(&digest)
+}
+
+fn format_digest_as_uuid(digest: &[u8]) -> String {
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Set RFC 4122 version 4 and variant bits for strict UUID validators.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 fn upstream_stream_value(provider: Provider, request: &ResponsesRequest) -> bool {
@@ -488,6 +690,7 @@ fn strip_unsupported_keys(value: &mut Value) {
     match value {
         Value::Object(object) => {
             object.remove("cache_control");
+            object.remove("rotom_session_id");
             for nested in object.values_mut() {
                 strip_unsupported_keys(nested);
             }
@@ -1152,5 +1355,74 @@ mod tests {
             error.to_string(),
             "configuration error: function tool is missing function metadata"
         );
+    }
+
+    #[test]
+    fn derives_stable_prompt_cache_key_across_conversation_turns() {
+        let turn1 = to_codex_request(&request(json!({
+            "model": "gpt-5.4",
+            "messages": [
+                {"role": "system", "content": "be terse"},
+                {"role": "user", "content": "first question"}
+            ]
+        })))
+        .unwrap();
+        let turn2 = to_codex_request(&request(json!({
+            "model": "gpt-5.4",
+            "messages": [
+                {"role": "system", "content": "be terse"},
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "user", "content": "second question"}
+            ]
+        })))
+        .unwrap();
+
+        let key1 = turn1["prompt_cache_key"].as_str().unwrap();
+        let key2 = turn2["prompt_cache_key"].as_str().unwrap();
+        assert!(!key1.is_empty());
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn extracts_claude_code_session_from_metadata_user_id() {
+        let body = to_codex_request(&request(json!({
+            "model": "gpt-5.4",
+            "metadata": {
+                "user_id": "user_abc123_account_11111111-2222-3333-4444-555555555555_session_99999999-aaaa-bbbb-cccc-dddddddddddd"
+            },
+            "messages": [{"role": "user", "content": "hello"}]
+        })))
+        .unwrap();
+
+        assert_eq!(
+            body["prompt_cache_key"],
+            "99999999-aaaa-bbbb-cccc-dddddddddddd"
+        );
+    }
+
+    #[test]
+    fn forwards_prompt_cache_retention_only_for_vercel() {
+        let req: ResponsesRequest = serde_json::from_value(json!({
+            "model": "openai/gpt-5",
+            "prompt_cache_key": "conv-123",
+            "prompt_cache_retention": "24h"
+        }))
+        .unwrap();
+        let input = vec![json!({
+            "role": "user",
+            "content": [{"type": "input_text", "text": "hello"}]
+        })];
+
+        let vercel = responses_to_upstream_request(Provider::Vercel, &req, &input).unwrap();
+        let grok = responses_to_upstream_request(Provider::Grok, &req, &input).unwrap();
+        let codex = responses_to_upstream_request(Provider::Codex, &req, &input).unwrap();
+
+        assert_eq!(vercel["prompt_cache_key"], "conv-123");
+        assert_eq!(vercel["prompt_cache_retention"], "24h");
+        assert_eq!(grok["prompt_cache_key"], "conv-123");
+        assert!(grok.get("prompt_cache_retention").is_none());
+        assert_eq!(codex["prompt_cache_key"], "conv-123");
+        assert!(codex.get("prompt_cache_retention").is_none());
     }
 }

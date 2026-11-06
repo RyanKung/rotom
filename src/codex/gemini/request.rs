@@ -36,7 +36,7 @@ pub(super) async fn payload(body: &Value, project: &str, replay: &ReplayCache) -
     if contents.is_empty() {
         return Err(Error::config("Gemini requires nonempty conversation input"));
     }
-    let session = session_id(&contents);
+    let session = session_id(body, &contents);
     let mut request = json!({"contents":contents,"sessionId":session});
     if let Some(schema) = body.pointer("/text/format/schema") {
         system.push(json!({"text":format!("When returning a final answer, return only JSON satisfying this JSON Schema, including all numeric and array bounds: {schema}")}));
@@ -51,12 +51,31 @@ pub(super) async fn payload(body: &Value, project: &str, replay: &ReplayCache) -
         "userAgent":"antigravity","requestType":"agent","requestId":format!("agent-{:032x}",rand::random::<u128>())}))
 }
 
-// Stable across turns, including image-only conversations: hash the first user content.
-fn session_id(contents: &[Value]) -> String {
-    let first = contents
-        .iter()
-        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"));
-    let seed = first.map_or_else(String::new, Value::to_string);
+// Stable across turns, including image-only conversations: honor explicit session/cache keys
+// when supplied, or hash the first user content.
+fn session_id(body: &Value, contents: &[Value]) -> String {
+    let explicit = [
+        "rotom_session_id",
+        "conversation_id",
+        "session_id",
+        "prompt_cache_key",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    });
+    let seed = explicit.map_or_else(
+        || {
+            let first = contents
+                .iter()
+                .find(|item| item.get("role").and_then(Value::as_str) == Some("user"));
+            first.map_or_else(String::new, Value::to_string)
+        },
+        str::to_owned,
+    );
     let digest = Sha256::digest(seed.as_bytes());
     let n = digest
         .iter()
