@@ -27,8 +27,9 @@ pub fn normalize_model(model: &str) -> String {
 ///
 /// Returns an error when a function tool omits its function metadata.
 pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
-    let (instructions, input) = split_messages(&request.messages);
+    let (instructions, mut input) = split_messages(&request.messages);
     let cache_key = resolve_prompt_cache_key(&request.extra, None, None, &instructions, &input);
+    stabilize_sliding_window(cache_key.as_deref(), &mut input);
     let mut body = json!({
         "model": normalize_model(&request.model),
         "store": false,
@@ -101,8 +102,7 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
 fn split_messages(messages: &[ChatMessage]) -> (String, Vec<Value>) {
     messages
         .iter()
-        .enumerate()
-        .fold((Vec::new(), Vec::new()), |mut acc, (index, message)| {
+        .fold((Vec::new(), Vec::new()), |mut acc, message| {
             match message.role.as_str() {
                 "system" | "developer" => {
                     if acc.1.is_empty() {
@@ -120,7 +120,7 @@ fn split_messages(messages: &[ChatMessage]) -> (String, Vec<Value>) {
                     "role": "user",
                     "content": content_to_input_parts(message.content.as_ref())
                 })),
-                "assistant" => append_assistant_message(&mut acc.1, message, index),
+                "assistant" => append_assistant_message(&mut acc.1, message),
                 "tool" => {
                     if let Some(call_id) = message.tool_call_id.as_deref() {
                         acc.1.push(json!({
@@ -137,14 +137,15 @@ fn split_messages(messages: &[ChatMessage]) -> (String, Vec<Value>) {
         .map_first(|parts| parts.join("\n\n"))
 }
 
-fn append_assistant_message(input: &mut Vec<Value>, message: &ChatMessage, index: usize) {
+fn append_assistant_message(input: &mut Vec<Value>, message: &ChatMessage) {
     if let Some(text) = message_text(message).filter(|text| !text.is_empty()) {
+        let id_hash = hash_u64(text.as_bytes()) & 0x0000_ffff_ffff_ffff;
         input.push(json!({
             "type": "message",
             "role": "assistant",
             "content": [{"type": "output_text", "text": text, "annotations": []}],
             "status": "completed",
-            "id": format!("msg_{index}")
+            "id": format!("msg_{id_hash:012x}")
         }));
     }
 
@@ -288,7 +289,7 @@ pub fn responses_to_upstream_request(
     input: &[Value],
 ) -> Result<Value> {
     let normalized = responses_input::normalize(input);
-    let input = normalized.items;
+    let mut input = normalized.items;
     let instructions = responses_input::combined_instructions(
         request.instructions.as_deref(),
         &normalized.instructions,
@@ -300,6 +301,9 @@ pub fn responses_to_upstream_request(
         &instructions,
         &input,
     );
+    if request.previous_response_id.is_none() {
+        stabilize_sliding_window(cache_key.as_deref(), &mut input);
+    }
     let stream = upstream_stream_value(provider, request);
     let store = upstream_store_value(provider, request, &input);
     let text = request.extra.get("text").cloned().unwrap_or_else(|| {
@@ -471,10 +475,20 @@ fn normalize_cache_key(raw: &str) -> String {
 
 const MAX_CONTINUITY_ENTRIES: usize = 4096;
 const INSTRUCTION_SEED_PREFIX_CHARS: usize = 512;
+const SLIDING_WINDOW_MIN_ITEMS: usize = 12;
+const SLIDING_WINDOW_STRIDE: usize = 10;
+
+#[derive(Clone, Copy)]
+struct WindowAnchor {
+    raw_first_hash: u64,
+    anchor_hash: Option<u64>,
+}
 
 struct ContinuityStore {
     order: std::collections::VecDeque<u64>,
     map: std::collections::HashMap<u64, String>,
+    window_order: std::collections::VecDeque<String>,
+    window_anchors: std::collections::HashMap<String, WindowAnchor>,
 }
 
 impl ContinuityStore {
@@ -482,6 +496,8 @@ impl ContinuityStore {
         Self {
             order: std::collections::VecDeque::new(),
             map: std::collections::HashMap::new(),
+            window_order: std::collections::VecDeque::new(),
+            window_anchors: std::collections::HashMap::new(),
         }
     }
 
@@ -503,12 +519,124 @@ impl ContinuityStore {
         self.order.push_back(fingerprint);
         self.map.insert(fingerprint, key.to_owned());
     }
+
+    fn get_window_anchor(&self, key: &str) -> Option<WindowAnchor> {
+        self.window_anchors.get(key).copied()
+    }
+
+    fn set_window_anchor(&mut self, key: &str, anchor: WindowAnchor) {
+        if let Some(existing) = self.window_anchors.get_mut(key) {
+            *existing = anchor;
+            return;
+        }
+        if self.window_order.len() >= MAX_CONTINUITY_ENTRIES
+            && let Some(oldest) = self.window_order.pop_front()
+        {
+            self.window_anchors.remove(&oldest);
+        }
+        self.window_order.push_back(key.to_owned());
+        self.window_anchors.insert(key.to_owned(), anchor);
+    }
 }
 
 fn continuity_store() -> &'static std::sync::Mutex<ContinuityStore> {
     static STORE: std::sync::OnceLock<std::sync::Mutex<ContinuityStore>> =
         std::sync::OnceLock::new();
     STORE.get_or_init(|| std::sync::Mutex::new(ContinuityStore::new()))
+}
+
+fn stabilize_sliding_window(cache_key: Option<&str>, input: &mut Vec<Value>) {
+    let Some(key) = cache_key.filter(|key| !key.is_empty()) else {
+        return;
+    };
+    if input.len() < SLIDING_WINDOW_MIN_ITEMS {
+        return;
+    }
+
+    let hashes: Vec<u64> = input.iter().map(item_fingerprint).collect();
+    let max_search = (hashes.len() / 2).min(hashes.len().saturating_sub(2));
+
+    let Ok(mut store) = continuity_store().lock() else {
+        return;
+    };
+
+    let Some(prev) = store.get_window_anchor(key) else {
+        store.set_window_anchor(
+            key,
+            WindowAnchor {
+                raw_first_hash: hashes[0],
+                anchor_hash: None,
+            },
+        );
+        return;
+    };
+
+    if let Some(anchor) = prev.anchor_hash {
+        if let Some(idx) = hashes[..=max_search].iter().position(|&h| h == anchor) {
+            store.set_window_anchor(
+                key,
+                WindowAnchor {
+                    raw_first_hash: hashes[0],
+                    anchor_hash: Some(anchor),
+                },
+            );
+            drop(store);
+            if idx > 0 {
+                input.drain(..idx);
+            }
+            return;
+        }
+        if hashes[0] == prev.raw_first_hash {
+            store.set_window_anchor(
+                key,
+                WindowAnchor {
+                    raw_first_hash: hashes[0],
+                    anchor_hash: None,
+                },
+            );
+            return;
+        }
+    } else if hashes[0] == prev.raw_first_hash {
+        return;
+    }
+
+    let new_idx = pick_window_anchor_index(input);
+    store.set_window_anchor(
+        key,
+        WindowAnchor {
+            raw_first_hash: hashes[0],
+            anchor_hash: Some(hashes[new_idx]),
+        },
+    );
+    drop(store);
+    if new_idx > 0 {
+        input.drain(..new_idx);
+    }
+}
+
+fn pick_window_anchor_index(input: &[Value]) -> usize {
+    let target = SLIDING_WINDOW_STRIDE.min(input.len() / 3).max(1);
+    let max_idx = (input.len() / 2).max(target);
+
+    if let Some(offset) = input[target..=max_idx]
+        .iter()
+        .position(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+    {
+        return target + offset;
+    }
+    if let Some(idx) = (1..target)
+        .rev()
+        .find(|&idx| input[idx].get("role").and_then(Value::as_str) == Some("user"))
+    {
+        return idx;
+    }
+    if let Some(offset) = input[target..=max_idx]
+        .iter()
+        .position(|item| item.get("type").and_then(Value::as_str) != Some("function_call_output"))
+    {
+        return target + offset;
+    }
+    target
 }
 
 fn continuity_or_deterministic_cache_key(instructions: &str, input: &[Value]) -> Option<String> {
@@ -578,16 +706,18 @@ fn dialogue_item_hashes(input: &[Value]) -> Vec<u64> {
                 Some("user" | "assistant")
             )
         })
-        .map(|item| {
-            let mut clean = item.clone();
-            strip_unsupported_keys(&mut clean);
-            if let Some(object) = clean.as_object_mut() {
-                object.remove("id");
-                object.remove("status");
-            }
-            hash_u64(clean.to_string().as_bytes())
-        })
+        .map(item_fingerprint)
         .collect()
+}
+
+fn item_fingerprint(item: &Value) -> u64 {
+    let mut clean = item.clone();
+    strip_unsupported_keys(&mut clean);
+    if let Some(object) = clean.as_object_mut() {
+        object.remove("id");
+        object.remove("status");
+    }
+    hash_u64(clean.to_string().as_bytes())
 }
 
 fn opening_turn_fingerprint(seed_prefix: &str, first_dialogue_hash: u64) -> u64 {
@@ -1695,5 +1825,76 @@ mod tests {
         let key2 = turn2["prompt_cache_key"].as_str().unwrap();
         assert_ne!(key1, "");
         assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn assistant_message_id_is_content_deterministic_across_index_shifts() {
+        let before_shift = to_codex_request(&request(json!({
+            "model": "grok-4.3",
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "oldest question"},
+                {"role": "assistant", "content": "oldest answer"},
+                {"role": "user", "content": "kept question"},
+                {"role": "assistant", "content": "kept answer"},
+                {"role": "user", "content": "latest question"}
+            ]
+        })))
+        .unwrap();
+
+        let after_shift = to_codex_request(&request(json!({
+            "model": "grok-4.3",
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "kept question"},
+                {"role": "assistant", "content": "kept answer"},
+                {"role": "user", "content": "latest question"}
+            ]
+        })))
+        .unwrap();
+
+        assert_eq!(
+            before_shift["input"][3]["id"],
+            after_shift["input"][1]["id"]
+        );
+    }
+
+    #[test]
+    fn stabilizes_input_prefix_across_sliding_window_turns() {
+        let build_turn = |start_turn: usize, end_turn: usize| {
+            let mut messages = vec![json!({
+                "role": "system",
+                "content": "sliding window anchor test system prompt"
+            })];
+            for idx in start_turn..end_turn {
+                messages.push(json!({"role": "user", "content": format!("u_{idx}")}));
+                messages.push(json!({"role": "assistant", "content": format!("a_{idx}")}));
+            }
+            messages.push(json!({"role": "user", "content": format!("u_{end_turn}")}));
+            to_codex_request(&request(json!({
+                "model": "grok-4.3",
+                "messages": messages
+            })))
+            .unwrap()
+        };
+
+        // Initial 10-turn window: [u_0, a_0, ..., u_9, a_9, u_10] (21 items)
+        let _turn0 = build_turn(0, 10);
+        // Turn 1 slides window by 1 turn: [u_1, a_1, ..., u_10, a_10, u_11]
+        let turn1 = build_turn(1, 11);
+        // Turn 2 slides window by 1 more turn: [u_2, a_2, ..., u_11, a_11, u_12]
+        let turn2 = build_turn(2, 12);
+        // Turn 3 slides window by 1 more turn: [u_3, a_3, ..., u_12, a_12, u_13]
+        let turn3 = build_turn(3, 13);
+
+        let input1 = turn1["input"].as_array().unwrap();
+        let input2 = turn2["input"].as_array().unwrap();
+        let input3 = turn3["input"].as_array().unwrap();
+
+        // Across consecutive sliding turns, the anchored prefix stays byte-for-byte identical.
+        assert_eq!(input1[0], input2[0]);
+        assert_eq!(input2[0], input3[0]);
+        assert_eq!(&input1[..input1.len() - 1], &input2[..input1.len() - 1]);
+        assert_eq!(&input2[..input2.len() - 1], &input3[..input2.len() - 1]);
     }
 }
