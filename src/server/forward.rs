@@ -58,6 +58,7 @@ pub(super) async fn middleware(
         if model
             .split_once('/')
             .is_some_and(|(service, _)| state.forwards.contains_key(service))
+            && !state.has_listed_upstream_for_model(model)
         {
             return Error::config(format!("forward model {model} is not configured"))
                 .into_response();

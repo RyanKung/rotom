@@ -64,7 +64,7 @@ async fn gpt6_effort_fix_preserves_legacy_max_mapping_for_older_models() {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let (_dir, state) = effort_test_state("gpt-5.5", captured.clone()).await;
     send_effort(state, "max", false).await;
-    let requests = captured.lock().await;
+    let requests = captured.lock().await.clone();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0]["model"], "gpt-5.5");
     assert_eq!(requests[0]["reasoning"]["effort"], "xhigh");

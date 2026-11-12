@@ -1,7 +1,10 @@
 use crate::{
+    config::{AuthStore, Credentials, Provider},
     forward::ForwardConfig,
     openai::response::ModelList,
-    server::{AppState, router},
+    server::{AppState, CodexClient, UpstreamState, router},
+    testsupport::TempDir,
+    token::TokenManager,
 };
 use axum::{
     Router,
@@ -10,6 +13,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use reqwest::Client;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use tokio::{net::TcpListener, sync::mpsc};
@@ -108,4 +112,83 @@ async fn models_list_includes_forward_alias() {
         .collect();
     assert!(ids.contains(&"deepseek/native"));
     assert!(ids.contains(&"anthropic/alias"));
+}
+
+#[tokio::test]
+async fn forward_service_prefix_falls_back_to_listed_upstream_provider_when_model_not_in_forward() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    store
+        .save(&Credentials {
+            provider: Provider::Vercel,
+            access_token: "vercel-token".into(),
+            refresh_token: String::new(),
+            account_id: "vercel-acct".into(),
+            expires_at: i64::MAX,
+        })
+        .unwrap();
+    let http = Client::new();
+    let (vercel_url, mut vercel_received) = mock_upstream().await;
+    let state = AppState::new_multi_with_forwards(
+        vec![UpstreamState {
+            provider: Provider::Vercel,
+            token_manager: TokenManager::new_for_provider(store, Provider::Vercel, http.clone()),
+            client: CodexClient::new(http, format!("{vercel_url}/v1")),
+        }],
+        Some("local".into()),
+        ModelList::from_id_owners([(
+            "deepseek/deepseek-v4.1-flash-1017".to_owned(),
+            "vercel-ai-gateway",
+        )]),
+        None,
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "deepseek".into(),
+            ForwardConfig {
+                base_url: "http://forward.invalid/anthropic".into(),
+                api_key: Some("up".into()),
+                headers: BTreeMap::new(),
+                models: vec!["native".into()],
+            },
+        )]),
+    )
+    .unwrap();
+
+    // Unlisted forward model still returns a 400 config error.
+    let unknown_response = router(state.clone())
+        .oneshot(post(
+            "/v1/chat/completions",
+            &json!({
+                "model": "deepseek/unconfigured",
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unknown_response.status(), StatusCode::BAD_REQUEST);
+    let unknown_body: Value = serde_json::from_slice(
+        &to_bytes(unknown_response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        unknown_body["error"]["message"],
+        "configuration error: forward model deepseek/unconfigured is not configured"
+    );
+
+    // Listed Vercel AI Gateway model sharing the `deepseek/` prefix falls through to Vercel.
+    let _ = router(state)
+        .oneshot(post(
+            "/v1/chat/completions",
+            &json!({
+                "model": "deepseek/deepseek-v4.1-flash-1017",
+                "messages": [{"role": "user", "content": "hi"}]
+            }),
+        ))
+        .await
+        .unwrap();
+    let (upstream_path, upstream_body) = vercel_received.recv().await.unwrap();
+    assert_eq!(upstream_path, "/v1/codex/responses");
+    assert_eq!(upstream_body["model"], "deepseek/deepseek-v4.1-flash-1017");
 }
