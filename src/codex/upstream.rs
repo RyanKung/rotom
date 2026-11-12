@@ -263,6 +263,17 @@ impl UpstreamProvider for VercelUpstream {
         vercel_headers(credentials)
     }
 
+    fn request_headers(&self, credentials: &Credentials, body: &Value) -> Result<HeaderMap> {
+        let mut headers = vercel_headers(credentials)?;
+        if let Some(session_id) = prompt_cache_key_from_body(body) {
+            headers.insert(
+                HeaderName::from_static("x-session-id"),
+                header_value(session_id)?,
+            );
+        }
+        Ok(headers)
+    }
+
     fn prepare_request(&self, body: &mut Value) {
         strip_model_prefix(body, &["vercel/"]);
         ensure_prompt_cache_key(body);
@@ -832,7 +843,7 @@ mod tests {
         };
 
         adapter.prepare_request(&mut body);
-        let headers = adapter.headers(&credentials).unwrap();
+        let headers = adapter.request_headers(&credentials, &body).unwrap();
 
         assert_eq!(adapter.provider(), Provider::Vercel);
         assert_eq!(
@@ -874,6 +885,9 @@ mod tests {
         assert_eq!(body["max_output_tokens"], 128);
         assert_eq!(headers["authorization"], "Bearer token");
         assert_eq!(headers["content-type"], "application/json");
+        let cache_key = body["prompt_cache_key"].as_str().unwrap();
+        assert_ne!(cache_key, "");
+        assert_eq!(headers["x-session-id"], cache_key);
     }
 
     #[test]

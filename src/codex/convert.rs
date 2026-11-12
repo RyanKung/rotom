@@ -605,7 +605,7 @@ fn stabilize_sliding_window(cache_key: Option<&str>, input: &mut Vec<Value>) {
         key,
         WindowAnchor {
             raw_first_hash: hashes[0],
-            anchor_hash: Some(hashes[new_idx]),
+            anchor_hash: (new_idx > 0).then(|| hashes[new_idx]),
         },
     );
     drop(store);
@@ -630,13 +630,7 @@ fn pick_window_anchor_index(input: &[Value]) -> usize {
     {
         return idx;
     }
-    if let Some(offset) = input[target..=max_idx]
-        .iter()
-        .position(|item| item.get("type").and_then(Value::as_str) != Some("function_call_output"))
-    {
-        return target + offset;
-    }
-    target
+    0
 }
 
 fn continuity_or_deterministic_cache_key(instructions: &str, input: &[Value]) -> Option<String> {
@@ -1912,5 +1906,49 @@ mod tests {
         assert_eq!(input2[0], input3[0]);
         assert_eq!(&input1[..input1.len() - 1], &input2[..input1.len() - 1]);
         assert_eq!(&input2[..input2.len() - 1], &input3[..input2.len() - 1]);
+    }
+
+    #[test]
+    fn preserves_opening_user_message_in_single_turn_tool_loop_when_first_item_changes() {
+        let build_tool_turn = |opening_text: &str| {
+            let mut messages = vec![
+                json!({"role": "system", "content": "tool loop system prompt"}),
+                json!({"role": "user", "content": opening_text}),
+            ];
+            for idx in 0..8 {
+                let call_id = format!("call_{idx}");
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"a.rs\"}"}
+                    }]
+                }));
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": format!("result {idx}")
+                }));
+            }
+            to_codex_request(&request(json!({
+                "model": "moonshotai/kimi-k3",
+                "prompt_cache_key": "fixed-tool-session-key",
+                "messages": messages
+            })))
+            .unwrap()
+        };
+
+        let initial = build_tool_turn("original task prompt");
+        let after_compaction = build_tool_turn("compacted summary task prompt");
+
+        let input = after_compaction["input"].as_array().unwrap();
+        assert_eq!(input.len(), initial["input"].as_array().unwrap().len());
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(
+            input[0]["content"][0]["text"],
+            "compacted summary task prompt"
+        );
     }
 }
