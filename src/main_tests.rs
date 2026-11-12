@@ -14,8 +14,11 @@ use std::{
     collections::BTreeMap,
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+static NEXT_TEST_AUTH_ID: AtomicU64 = AtomicU64::new(0);
 
 #[path = "main_daemon_tests.rs"]
 mod daemon_defaults;
@@ -30,12 +33,13 @@ struct TestAuthStore {
 impl TestAuthStore {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "rotom-main-test-{}-{}.json",
+            "rotom-main-test-{}-{}-{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_TEST_AUTH_ID.fetch_add(1, Ordering::Relaxed)
         ));
         Self {
             store: AuthStore::new(path.clone()),

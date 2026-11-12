@@ -272,6 +272,12 @@ impl AppState {
             })
     }
 
+    pub(super) fn has_listed_upstream_for_model(&self, model: &str) -> bool {
+        self.listed_provider_for_model(model)
+            .and_then(|provider| self.upstream_for_provider(provider))
+            .is_some()
+    }
+
     /// Uses the advertised model owner to route configured IDs with unfamiliar names.
     fn listed_provider_for_model(&self, model: &str) -> Option<Provider> {
         let listed = self

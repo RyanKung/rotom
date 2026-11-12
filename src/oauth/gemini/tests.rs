@@ -133,6 +133,7 @@ async fn login_resolves_managed_project_and_refresh_keeps_it_without_reonboardin
     assert_eq!(forms.len(), 2);
     assert_eq!(forms[0].get("code_verifier").unwrap(), "verifier");
     assert_eq!(forms[1].get("refresh_token").unwrap(), "refresh");
+    drop(forms);
     task.abort();
 }
 

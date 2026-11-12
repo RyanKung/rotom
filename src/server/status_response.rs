@@ -20,8 +20,14 @@ pub(super) async fn build_runtime_status_response(state: &super::AppState) -> cr
         Err(error) => return Err(error),
     };
     if !state.forwards.is_empty() {
+        let forward_only_aliases = state
+            .model_aliases
+            .iter()
+            .filter(|(_, target)| !state.has_listed_upstream_for_model(target))
+            .map(|(alias, target)| (alias.clone(), target.clone()))
+            .collect();
         let alias_warnings =
-            crate::forward::collect_forward_alias_warnings(&state.forwards, &state.model_aliases);
+            crate::forward::collect_forward_alias_warnings(&state.forwards, &forward_only_aliases);
 
         let forwards = state
             .forwards
