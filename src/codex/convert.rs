@@ -70,7 +70,7 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
     }
 
     let inferred_provider = crate::models::provider_for_model(&request.model);
-    if inferred_provider == Some(Provider::Gemini) {
+    if matches!(inferred_provider, Some(Provider::Gemini | Provider::Vercel)) {
         insert_optional(
             &mut body,
             "temperature",
@@ -1248,6 +1248,22 @@ mod tests {
         .unwrap();
 
         assert_key_absent_recursive(&body, "max_output_tokens");
+    }
+
+    #[test]
+    fn forwards_chat_completion_token_limit_and_sampling_controls_for_vercel() {
+        let body = to_codex_request(&request(json!({
+            "model": "zai/glm-5.3",
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_completion_tokens": 64000,
+            "temperature": 0.2,
+            "top_p": 0.9
+        })))
+        .unwrap();
+
+        assert_eq!(body["max_output_tokens"], 64000);
+        assert_eq!(body["temperature"], 0.2);
+        assert_eq!(body["top_p"], 0.9);
     }
 
     #[test]
