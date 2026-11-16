@@ -237,6 +237,14 @@ Model availability depends on your upstream account and its rollout. In Kiro,
 
 Unknown Anthropic ids like `claude-sonnet-*` are rewritten to a fallback
 (default `gpt-6-sol`). Override with `--model-fallback` or `ROTOM_MODEL_FALLBACK`.
+To route lightweight background Haiku requests (`claude-haiku-*` or `haiku`) to a
+separate fast/small model, set `"small_model_fallback": "gpt-6-luna"` in
+`~/.rotom/config.json`.
+
+Anthropic-compatible `/v1/models` responses include a product-style
+`display_name` (such as `GPT-6.1 Sol` or `Claude Opus 4.6`) and an optional
+`context_window` when configured via `"model_windows": {"gpt-6.1-sol": 1000000}`
+in `~/.rotom/config.json`.
 
 ### Reasoning Effort
 
@@ -278,7 +286,7 @@ effort values when diagnosing a connection.
 
 ## Forwarding
 
-Add a named service to `forwards` in `~/.rotom/config.json`. Requests keep their original JSON; only `model` is rewritten.
+Add a named service to `forwards` in `~/.rotom/config.json`. Requests keep their original JSON; only `model` is rewritten and client-only telemetry fields (`diagnostics` and `metadata.diagnostics`) are stripped.
 
 ```json
 {
@@ -418,8 +426,8 @@ that config, run `rotom daemon reload`. An explicit installation override stays
 in the service definition and takes precedence over later config changes.
 
 `rotom daemon reload` rereads `config.json` without restarting the process. It
-supports `model_aliases`, `models`, `forwards` (including URLs, headers and keys),
-local `api_key`, and `model_fallback`. The command waits for an acknowledgement
+supports `model_aliases`, `model_windows`, `models`, `forwards` (including URLs, headers and keys),
+local `api_key`, `model_fallback`, and `small_model_fallback`. The command waits for an acknowledgement
 and exits unsuccessfully if loading, validation, or preparation fails; the old
 configuration remains active. A missing file is rejected rather than treated as
 a reset. Write a complete JSON file before requesting reload (prefer atomic rename).

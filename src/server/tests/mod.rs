@@ -92,6 +92,36 @@ fn configured_aliases_rewrite_to_native_models_but_native_names_remain_valid() {
 }
 
 #[test]
+fn small_model_fallback_routes_haiku_independently_of_primary_fallback() {
+    let dir = TempDir::new().unwrap();
+    let store = AuthStore::new(dir.path().join("auth.json"));
+    let http = Client::new();
+    let state = AppState::new_with_model_fallback(
+        TokenManager::new(
+            store,
+            CodexOAuthClient::new_with_token_url(http.clone(), "http://token.invalid"),
+        ),
+        CodexClient::new(http, "http://codex.invalid"),
+        None,
+        ModelList::from_ids(["gpt-6.1-sol", "gpt-6-luna"]),
+        Some("gpt-6.1-sol".into()),
+    )
+    .with_small_model_fallback(Some("gpt-6-luna".into()));
+
+    let mut haiku = "claude-haiku-4-5-20251001".to_owned();
+    state.rewrite_model(&mut haiku);
+    assert_eq!(haiku, "gpt-6-luna");
+
+    let mut bare_haiku = "haiku".to_owned();
+    state.rewrite_model(&mut bare_haiku);
+    assert_eq!(bare_haiku, "gpt-6-luna");
+
+    let mut sonnet = "claude-sonnet-4-6".to_owned();
+    state.rewrite_model(&mut sonnet);
+    assert_eq!(sonnet, "gpt-6.1-sol");
+}
+
+#[test]
 fn removed_cursor_models_cannot_fall_back_to_another_upstream() {
     let dir = TempDir::new().unwrap();
     let store = AuthStore::new(dir.path().join("auth.json"));

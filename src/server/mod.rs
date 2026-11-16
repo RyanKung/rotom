@@ -44,7 +44,9 @@ pub struct AppState {
     api_key: Option<Arc<str>>,
     models: ModelList,
     model_fallback: Option<Arc<str>>,
+    small_model_fallback: Option<Arc<str>>,
     model_aliases: Arc<BTreeMap<String, String>>,
+    model_windows: Arc<BTreeMap<String, u64>>,
     responses: store::ResponseStore,
     batches: store::BatchStore,
 }
@@ -139,10 +141,26 @@ impl AppState {
             api_key: api_key.map(Arc::from),
             models,
             model_fallback: model_fallback.map(Arc::from),
+            small_model_fallback: None,
             model_aliases: Arc::new(model_aliases),
+            model_windows: Arc::new(BTreeMap::new()),
             responses: store::ResponseStore::default(),
             batches: store::BatchStore::default(),
         }
+    }
+
+    /// Configures an optional fallback model specifically for lightweight Anthropic Haiku requests.
+    #[must_use]
+    pub fn with_small_model_fallback(mut self, small_model_fallback: Option<String>) -> Self {
+        self.small_model_fallback = small_model_fallback.map(Arc::from);
+        self
+    }
+
+    /// Configures optional per-model context windows advertised in `/v1/models`.
+    #[must_use]
+    pub fn with_model_windows(mut self, model_windows: BTreeMap<String, u64>) -> Self {
+        self.model_windows = Arc::new(model_windows);
+        self
     }
 
     /// Builds state with providers, forwards, or both.
@@ -209,17 +227,36 @@ impl AppState {
         if let Some(source) = self.model_aliases.get(model) {
             source.clone_into(model);
         }
-        if provider_for_model(model).is_none() {
+        if provider_for_model(model).is_none() || self.is_unconfigured_forward_model(model) {
             return;
         }
-        let Some(fallback) = self.model_fallback.as_deref() else {
-            return;
-        };
-
         let normalized = normalize_model(model);
         if self.supports_model(&normalized) || !looks_like_anthropic_model(&normalized) {
             return;
         }
+
+        if looks_like_anthropic_small_model(&normalized)
+            && let Some(small_fallback) = self.small_model_fallback.as_deref()
+        {
+            if self.supports_model(small_fallback) {
+                tracing::warn!(
+                    requested_model = %model,
+                    fallback_model = %small_fallback,
+                    "small model fallback applied"
+                );
+                small_fallback.clone_into(model);
+                return;
+            }
+            tracing::warn!(
+                requested_model = %model,
+                fallback_model = %small_fallback,
+                "small model fallback ignored"
+            );
+        }
+
+        let Some(fallback) = self.model_fallback.as_deref() else {
+            return;
+        };
 
         if !self.supports_model(fallback) {
             tracing::warn!(
@@ -270,6 +307,14 @@ impl AppState {
                     .then(|| self.upstreams.first())
                     .flatten()
             })
+    }
+
+    pub(super) fn is_unconfigured_forward_model(&self, model: &str) -> bool {
+        model
+            .split_once('/')
+            .is_some_and(|(service, _)| self.forwards.contains_key(service))
+            && resolve_model(&self.forwards, model).is_none()
+            && !self.has_listed_upstream_for_model(model)
     }
 
     pub(super) fn has_listed_upstream_for_model(&self, model: &str) -> bool {
@@ -330,6 +375,11 @@ fn looks_like_anthropic_model(model: &str) -> bool {
         || model.contains("sonnet")
         || model.contains("opus")
         || model.contains("haiku")
+}
+
+fn looks_like_anthropic_small_model(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    lower == "haiku" || lower.contains("haiku")
 }
 
 fn normalize_model_for_support(model: &str) -> String {

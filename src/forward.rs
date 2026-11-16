@@ -3,8 +3,23 @@
 use crate::{Error, Result};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use url::Url;
+
+/// Strips client-only `diagnostics` and `metadata.diagnostics` telemetry fields.
+///
+/// Claude Desktop and embedded Claude Code CLIs attach these fields to requests,
+/// which strict upstream gateways reject with HTTP 400.
+pub fn sanitize_client_diagnostics(payload: &mut Value) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    object.remove("diagnostics");
+    if let Some(metadata) = object.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("diagnostics");
+    }
+}
 
 /// One third-party API whose request and response formats stay unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

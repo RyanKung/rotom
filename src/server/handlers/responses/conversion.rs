@@ -136,6 +136,7 @@ pub(in crate::server::handlers) fn anthropic_responses_request(
     let mut extra = request.extra.clone();
     extra.remove("rotom_anthropic_beta");
     extra.remove("rotom_anthropic_version");
+    crate::anthropic::sanitize_extra_diagnostics(&mut extra);
     if let Some(stop_sequences) = request
         .stop_sequences
         .as_ref()

@@ -164,10 +164,16 @@ pub struct AppConfig {
     /// Optional fallback model used for known unsupported Anthropic model ids.
     #[serde(default)]
     pub model_fallback: Option<String>,
+    /// Optional fallback model used specifically for lightweight Anthropic Haiku requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small_model_fallback: Option<String>,
     /// Optional Anthropic-facing aliases mapped to native upstream model IDs.
     /// The key is exposed to Claude clients and the value is sent upstream.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_aliases: BTreeMap<String, String>,
+    /// Optional per-model context windows advertised in Anthropic-compatible `/v1/models`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_windows: BTreeMap<String, u64>,
     /// Complete replacement model lists for selected providers. Missing providers use defaults.
     #[serde(
         default,
@@ -550,7 +556,9 @@ mod tests {
             auth_file: Some(PathBuf::from("/tmp/auth.json")),
             api_key: Some("secret".into()),
             model_fallback: Some("gpt-5.5".into()),
+            small_model_fallback: None,
             model_aliases: BTreeMap::new(),
+            model_windows: BTreeMap::new(),
             forwards: BTreeMap::new(),
             models: BTreeMap::from([(Provider::Grok, vec!["grok-custom".into()])]),
             provider: Some(Provider::Codex),

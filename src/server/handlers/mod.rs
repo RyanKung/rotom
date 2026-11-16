@@ -278,9 +278,10 @@ pub async fn models(State(state): State<AppState>, headers: HeaderMap) -> Respon
     match authorize(&headers, state.api_key.as_deref()) {
         Ok(()) => {
             if headers.contains_key("anthropic-version") {
-                Json(crate::anthropic::models_response(
+                Json(crate::anthropic::models_response_with_windows(
                     &state.models.data,
                     &state.model_aliases,
+                    &state.model_windows,
                 ))
                 .into_response()
             } else {

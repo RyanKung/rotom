@@ -25,6 +25,11 @@ async fn serve_command(
     let effective_api_key =
         api_key.or_else(|| config_string(config.as_ref(), |item| item.api_key.clone()));
     let effective_model_fallback = resolve_model_fallback(model_fallback, config.as_ref());
+    let effective_small_model_fallback =
+        config_string(config.as_ref(), |item| item.small_model_fallback.clone());
+    let effective_model_windows = config
+        .as_ref()
+        .map_or_else(Default::default, |item| item.model_windows.clone());
     let http = Client::new();
     let store = auth_store(effective_auth_file)?;
     let has_forwards = config
@@ -67,7 +72,9 @@ async fn serve_command(
                 .as_ref()
                 .map_or_else(Default::default, |item| item.model_aliases.clone()),
             config.map_or_else(Default::default, |item| item.forwards),
-        )?,
+        )?
+        .with_small_model_fallback(effective_small_model_fallback)
+        .with_model_windows(effective_model_windows),
         reload_settings,
     )
     .await
