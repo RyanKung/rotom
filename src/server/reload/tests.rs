@@ -110,12 +110,17 @@ async fn successful_reload_replaces_auth_models_aliases_and_preserves_stores() {
     let runtime = runtime(&dir, config("http://127.0.0.1:9", "old-key", "old"));
     let mut next = config("http://127.0.0.1:10", "new-key", "new");
     next.model_fallback = Some("remote/new".into());
+    next.small_model_fallback = Some("remote/new".into());
     runtime.settings.store.save(&next).unwrap();
     let candidate = runtime.prepare().await.unwrap();
     let mut alias = "friendly".to_owned();
     candidate.rewrite_model(&mut alias);
     assert_eq!(alias, "remote/new");
     assert_eq!(candidate.model_fallback.as_deref(), Some("remote/new"));
+    assert_eq!(
+        candidate.small_model_fallback.as_deref(),
+        Some("remote/new")
+    );
     // Preparing alone does not publish any of the candidate's auth or model changes.
     assert_eq!(models(&runtime, "old-key").await.0, StatusCode::OK);
     runtime.reload().await.unwrap();

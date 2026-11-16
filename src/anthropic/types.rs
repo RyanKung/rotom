@@ -356,6 +356,9 @@ pub struct ModelsResponse {
 /// Anthropic-compatible model object.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ModelInfo {
+    /// Model context window in tokens when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     /// Model creation timestamp in RFC 3339 form.
     pub created_at: String,
     /// Human-readable model name.

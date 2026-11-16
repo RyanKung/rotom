@@ -299,6 +299,91 @@ fn estimates_input_tokens_from_blocks() {
 }
 
 #[test]
+fn model_discovery_formats_friendly_display_names_and_configured_context_windows() {
+    let aliases = BTreeMap::from([("anthropic/sol".to_owned(), "gpt-6.1-sol".to_owned())]);
+    let windows = BTreeMap::from([
+        ("gpt-6.1-sol".to_owned(), 1_000_000),
+        ("claude-opus-4-6".to_owned(), 200_000),
+    ]);
+    let response = models_response_with_windows(
+        &[
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "openai-codex/gpt-6.1-sol".into(),
+                owned_by: "openai-codex",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "claude-opus-4-6".into(),
+                owned_by: "kiro",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "grok-4.7".into(),
+                owned_by: "xai",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gemini-2.5-pro".into(),
+                owned_by: "gemini",
+            },
+            crate::openai::response::ModelObject {
+                object: "model",
+                id: "gpt-6.1-sol".into(),
+                owned_by: "openai-codex",
+            },
+        ],
+        &aliases,
+        &windows,
+    );
+
+    let find = |id: &str| response.data.iter().find(|model| model.id == id).unwrap();
+    assert_eq!(find("openai-codex/gpt-6.1-sol").display_name, "GPT-6.1 Sol");
+    assert_eq!(
+        find("openai-codex/gpt-6.1-sol").context_window,
+        Some(1_000_000)
+    );
+    assert_eq!(find("claude-opus-4-6").display_name, "Claude Opus 4.6");
+    assert_eq!(find("claude-opus-4-6").context_window, Some(200_000));
+    assert_eq!(find("grok-4.7").display_name, "Grok 4.7");
+    assert_eq!(find("grok-4.7").context_window, None);
+    assert_eq!(find("gemini-2.5-pro").display_name, "Gemini 2.5 Pro");
+    assert_eq!(find("gemini-2.5-pro").context_window, None);
+    assert_eq!(find("anthropic/sol").display_name, "Sol");
+    assert_eq!(find("anthropic/sol").context_window, Some(1_000_000));
+}
+
+#[test]
+fn strips_client_diagnostics_from_anthropic_to_openai_conversion() {
+    let schema = json!({
+        "type": "object",
+        "properties": {"diagnostics": {"type": "string"}},
+        "required": ["diagnostics"],
+        "additionalProperties": false
+    });
+    let request: MessagesRequest = serde_json::from_value(json!({
+        "model": "gpt-6-sol",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [{"name": "report", "input_schema": schema}],
+        "diagnostics": {"client": "claude-desktop"},
+        "metadata": {
+            "user_id": "user_1",
+            "diagnostics": {"trace": "123"}
+        }
+    }))
+    .unwrap();
+
+    let converted = to_openai_request(&request).unwrap();
+    assert!(!converted.extra.contains_key("diagnostics"));
+    assert_eq!(converted.extra["metadata"], json!({"user_id": "user_1"}));
+    let codex_body = crate::codex::convert::to_codex_request(&converted).unwrap();
+    assert_eq!(
+        codex_body["tools"][0]["parameters"]["properties"]["diagnostics"]["type"],
+        "string"
+    );
+}
+
+#[test]
 fn estimates_input_tokens_include_documents_tools_and_thinking() {
     let request: MessagesRequest = serde_json::from_value(json!({
             "model": "gpt-5.5",

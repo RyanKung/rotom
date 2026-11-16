@@ -63,6 +63,9 @@ pub fn to_openai_request(request: &MessagesRequest) -> Result<ChatCompletionRequ
         append_message(&mut messages, message)?;
     }
 
+    let mut extra = request.extra.clone();
+    sanitize_extra_diagnostics(&mut extra);
+
     Ok(ChatCompletionRequest {
         model: request.model.clone(),
         messages,
@@ -77,8 +80,16 @@ pub fn to_openai_request(request: &MessagesRequest) -> Result<ChatCompletionRequ
         max_tokens: request.max_tokens,
         parallel_tool_calls: Some(parallel_tool_calls_enabled(request.tool_choice.as_ref())),
         stop: request.stop_sequences.clone(),
-        extra: request.extra.clone(),
+        extra,
     })
+}
+
+/// Removes client-only `diagnostics` and `metadata.diagnostics` telemetry fields from an extra map.
+pub fn sanitize_extra_diagnostics(extra: &mut Map<String, Value>) {
+    extra.remove("diagnostics");
+    if let Some(metadata) = extra.get_mut("metadata").and_then(Value::as_object_mut) {
+        metadata.remove("diagnostics");
+    }
 }
 
 /// Maps the OpenAI-compatible chat response into an Anthropic Messages response.
@@ -400,15 +411,29 @@ pub fn models_response(
     models: &[crate::openai::response::ModelObject],
     aliases: &BTreeMap<String, String>,
 ) -> ModelsResponse {
+    models_response_with_windows(models, aliases, &BTreeMap::new())
+}
+
+/// Builds an Anthropic-compatible models response with optional configured context windows.
+#[must_use]
+pub fn models_response_with_windows(
+    models: &[crate::openai::response::ModelObject],
+    aliases: &BTreeMap<String, String>,
+    windows: &BTreeMap<String, u64>,
+) -> ModelsResponse {
     let ids = discovery_model_ids(models, aliases);
     let data = ids
         .into_iter()
-        .map(|id| ModelInfo {
-            created_at: "2026-01-01T00:00:00Z".to_owned(),
-            description: "Provided by Rotom".to_owned(),
-            display_name: anthropic_display_name(&id),
-            id,
-            kind: "model",
+        .map(|id| {
+            let source_id = aliases.get(&id).map_or(id.as_str(), String::as_str);
+            ModelInfo {
+                context_window: resolve_context_window(windows, &id, source_id),
+                created_at: "2026-01-01T00:00:00Z".to_owned(),
+                description: "Provided by Rotom".to_owned(),
+                display_name: anthropic_display_name(&id),
+                id,
+                kind: "model",
+            }
         })
         .collect::<Vec<_>>();
     let first_id = data.first().map(|model| model.id.clone());
@@ -483,16 +508,106 @@ pub fn message_batch_list_response(batches: Vec<MessageBatch>) -> MessageBatchLi
     }
 }
 
+fn resolve_context_window(
+    windows: &BTreeMap<String, u64>,
+    id: &str,
+    source_id: &str,
+) -> Option<u64> {
+    windows
+        .get(id)
+        .or_else(|| windows.get(source_id))
+        .or_else(|| windows.get(bare_model_slug(id)))
+        .or_else(|| windows.get(bare_model_slug(source_id)))
+        .copied()
+        .filter(|&window| window > 0)
+}
+
+fn bare_model_slug(value: &str) -> &str {
+    let stripped = value
+        .strip_prefix("openai-codex/")
+        .or_else(|| value.strip_prefix("xai/"))
+        .or_else(|| value.strip_prefix("grok/"))
+        .or_else(|| value.strip_prefix("kiro/"))
+        .or_else(|| value.strip_prefix("gemini/"))
+        .or_else(|| value.strip_prefix("vercel/"))
+        .unwrap_or(value);
+    stripped.rsplit_once('/').map_or(stripped, |(_, slug)| slug)
+}
+
 fn anthropic_display_name(id: &str) -> String {
-    id.split('-')
-        .map(|part| {
-            let mut chars = part.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().collect::<String>() + chars.as_str()
-            })
+    let slug = id.rsplit_once('/').map_or(id, |(_, slug)| slug);
+    let version_digit =
+        |part: &str| (1..=2).contains(&part.len()) && part.chars().all(|c| c.is_ascii_digit());
+    let parts = slug
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .enumerate()
+        .map(|(index, part)| friendly_model_word(part, index == 0))
+        .collect::<Vec<_>>();
+    let mut out = String::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            let previous = parts[index - 1].as_str();
+            let digit = part.chars().next().is_some_and(|c| c.is_ascii_digit());
+            out.push(if (previous == "GPT" || previous == "GLM") && digit {
+                '-'
+            } else if version_digit(previous) && version_digit(part) {
+                '.'
+            } else {
+                ' '
+            });
+        }
+        out.push_str(part);
+    }
+    if out.is_empty() { id.to_owned() } else { out }
+}
+
+fn friendly_model_word(raw: &str, first: bool) -> String {
+    let lower = raw.to_ascii_lowercase();
+    let capitalized = || {
+        let mut chars = lower.chars();
+        chars.next().map_or_else(String::new, |head| {
+            head.to_ascii_uppercase().to_string() + chars.as_str()
         })
-        .collect::<Vec<_>>()
-        .join(" ")
+    };
+    match lower.as_str() {
+        "gpt" => "GPT".to_owned(),
+        "glm" => "GLM".to_owned(),
+        "llm" | "api" => lower.to_ascii_uppercase(),
+        "xai" => "xAI".to_owned(),
+        "deepseek" => "DeepSeek".to_owned(),
+        "minimax" => "MiniMax".to_owned(),
+        "kimi" => "Kimi".to_owned(),
+        "qwen" => "Qwen".to_owned(),
+        "qwen3" => "Qwen3".to_owned(),
+        "claude" => "Claude".to_owned(),
+        "gemini" => "Gemini".to_owned(),
+        "grok" => "Grok".to_owned(),
+        "mistral" => "Mistral".to_owned(),
+        "mimo" => "MiMo".to_owned(),
+        "mini" | "pro" | "flash" | "sol" | "terra" | "luna" | "astra" | "argon" | "fast"
+        | "codex" | "opus" | "sonnet" | "haiku" | "fable" | "turbo" | "lite" | "reasoner"
+        | "thinking" | "image" | "coder" | "next" | "preview" | "large" | "auto" | "chat"
+        | "build" => capitalized(),
+        _ if lower.strip_prefix('v').is_some_and(|rest| {
+            !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit() || c == '.')
+        }) =>
+        {
+            format!("V{}", &lower[1..])
+        }
+        _ if !first
+            && lower
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+            && lower.chars().any(|c| c.is_ascii_digit())
+            && lower.len() <= 8 =>
+        {
+            capitalized()
+        }
+        _ if lower.chars().all(|c| c.is_ascii_alphabetic()) => capitalized(),
+        _ => raw.to_owned(),
+    }
 }
 
 fn append_message(messages: &mut Vec<ChatMessage>, message: &Message) -> Result<()> {

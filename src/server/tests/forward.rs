@@ -74,7 +74,12 @@ fn post(path: &str, payload: &Value) -> Request {
 #[tokio::test]
 async fn alias_rewrites_model_and_joins_path() {
     let (url, mut received) = mock_upstream().await;
-    let payload = json!({"model": "anthropic/alias", "keep": true});
+    let payload = json!({
+        "model": "anthropic/alias",
+        "keep": true,
+        "diagnostics": {"desktop": true},
+        "metadata": {"user_id": "u1", "diagnostics": {"cli": true}}
+    });
     let response = router(state(format!("{url}/anthropic")))
         .oneshot(post("/v1/messages?x=1", &payload))
         .await
@@ -84,6 +89,8 @@ async fn alias_rewrites_model_and_joins_path() {
     assert_eq!(path, "/anthropic/v1/messages?x=1");
     assert_eq!(body["model"], "native");
     assert_eq!(body["keep"], true);
+    assert!(body.get("diagnostics").is_none());
+    assert_eq!(body["metadata"], json!({"user_id": "u1"}));
 }
 
 #[tokio::test]
@@ -191,4 +198,63 @@ async fn forward_service_prefix_falls_back_to_listed_upstream_provider_when_mode
     let (upstream_path, upstream_body) = vercel_received.recv().await.unwrap();
     assert_eq!(upstream_path, "/v1/codex/responses");
     assert_eq!(upstream_body["model"], "deepseek/deepseek-v4.1-flash-1017");
+}
+
+#[tokio::test]
+async fn model_and_small_model_fallbacks_route_to_configured_forwards() {
+    let (url, mut received) = mock_upstream().await;
+    let state = AppState::new_multi_with_forwards(
+        Vec::new(),
+        Some("local".into()),
+        ModelList::from_ids(Vec::<String>::new()),
+        Some("deepseek/main".into()),
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "deepseek".into(),
+            ForwardConfig {
+                base_url: format!("{url}/anthropic"),
+                api_key: Some("up".into()),
+                headers: BTreeMap::new(),
+                models: vec!["main".into(), "small".into()],
+            },
+        )]),
+    )
+    .unwrap()
+    .with_small_model_fallback(Some("deepseek/small".into()));
+
+    let app = router(state);
+    let haiku_response = app
+        .clone()
+        .oneshot(post(
+            "/v1/messages",
+            &json!({"model": "claude-haiku-4-5-20251001", "messages": [{"role": "user", "content": "hi"}]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(haiku_response.status(), StatusCode::OK);
+    let (haiku_path, haiku_body) = received.recv().await.unwrap();
+    assert_eq!(haiku_path, "/anthropic/v1/messages");
+    assert_eq!(haiku_body["model"], "small");
+
+    let sonnet_response = app
+        .clone()
+        .oneshot(post(
+            "/v1/messages",
+            &json!({"model": "claude-sonnet-4-6", "messages": [{"role": "user", "content": "hi"}]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sonnet_response.status(), StatusCode::OK);
+    let (sonnet_path, sonnet_body) = received.recv().await.unwrap();
+    assert_eq!(sonnet_path, "/anthropic/v1/messages");
+    assert_eq!(sonnet_body["model"], "main");
+
+    let unconfigured = app
+        .oneshot(post(
+            "/v1/messages",
+            &json!({"model": "deepseek/claude-sonnet-missing", "messages": [{"role": "user", "content": "hi"}]}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unconfigured.status(), StatusCode::BAD_REQUEST);
 }

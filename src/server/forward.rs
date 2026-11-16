@@ -3,7 +3,7 @@
 use super::{AppState, auth::authorize};
 use crate::{
     Error, Result,
-    forward::{ForwardConfig, resolve_model, upstream_url},
+    forward::{ForwardConfig, resolve_model, sanitize_client_diagnostics, upstream_url},
 };
 use axum::{
     body::{Body, to_bytes},
@@ -41,7 +41,7 @@ pub(super) async fn middleware(
             .run(Request::from_parts(parts, Body::from(bytes)))
             .await;
     };
-    let Some(requested_model) = payload
+    let Some(mut model) = payload
         .get("model")
         .and_then(Value::as_str)
         .map(str::to_owned)
@@ -50,16 +50,9 @@ pub(super) async fn middleware(
             .run(Request::from_parts(parts, Body::from(bytes)))
             .await;
     };
-    let model = state
-        .model_aliases
-        .get(&requested_model)
-        .map_or(requested_model.as_str(), String::as_str);
-    let Some((forward, upstream_model)) = resolve_model(&state.forwards, model) else {
-        if model
-            .split_once('/')
-            .is_some_and(|(service, _)| state.forwards.contains_key(service))
-            && !state.has_listed_upstream_for_model(model)
-        {
+    state.rewrite_model(&mut model);
+    let Some((forward, upstream_model)) = resolve_model(&state.forwards, &model) else {
+        if state.is_unconfigured_forward_model(&model) {
             return Error::config(format!("forward model {model} is not configured"))
                 .into_response();
         }
@@ -71,6 +64,7 @@ pub(super) async fn middleware(
     if let Some(model) = payload.get_mut("model") {
         *model = Value::String(upstream_model);
     }
+    sanitize_client_diagnostics(&mut payload);
     let path = parts
         .uri
         .path_and_query()

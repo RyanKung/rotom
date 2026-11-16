@@ -137,6 +137,10 @@ impl Runtime {
             .clone()
             .or_else(|| config.model_fallback.clone())
             .or_else(|| Some(self.settings.default_fallback.clone()));
+        let small_fallback = config
+            .small_model_fallback
+            .clone()
+            .filter(|value| !value.trim().is_empty());
         let mut candidate = AppState::new_multi_with_forwards(
             self.base.upstreams.as_ref().clone(),
             api_key,
@@ -144,7 +148,9 @@ impl Runtime {
             fallback,
             config.model_aliases,
             config.forwards,
-        )?;
+        )?
+        .with_small_model_fallback(small_fallback)
+        .with_model_windows(config.model_windows);
         candidate.responses = self.base.responses.clone();
         candidate.batches = self.base.batches.clone();
         Ok(candidate)
@@ -166,12 +172,17 @@ fn validate_reload(startup: &AppConfig, next: &AppConfig) -> Result<()> {
         .flatten()
         .chain(next.model_aliases.keys())
         .chain(next.model_aliases.values())
+        .chain(next.model_windows.keys())
         .chain(next.model_fallback.iter())
+        .chain(next.small_model_fallback.iter())
     {
         if id.is_empty() || id.chars().any(char::is_whitespace) || id.chars().any(char::is_control)
         {
             return Err(ReloadError::InvalidModelId.into());
         }
+    }
+    if next.model_windows.values().any(|&window| window == 0) {
+        return Err(ReloadError::InvalidModelId.into());
     }
     if next
         .api_key
