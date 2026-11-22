@@ -23,6 +23,7 @@ jobs:
       release_name: ${{ steps.meta.outputs.release_name }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
       asset_version: ${{ steps.meta.outputs.asset_version }}
+      previous_tag: ${{ steps.meta.outputs.previous_tag }}
 
     steps:
       - name: Check out repository
@@ -36,11 +37,13 @@ jobs:
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             tag="${GITHUB_REF_NAME}"
+            prev_tag="$(git tag --list 'v*' --sort=-version:refname | awk -v cur="${tag}" '$0 != cur { print; exit }')"
             {
               echo "release_tag=${tag}"
               echo "release_name=Release ${tag}"
               echo "asset_version=${tag}"
               echo "prerelease=false"
+              echo "previous_tag=${prev_tag}"
             } >> "${GITHUB_OUTPUT}"
           else
             today="$(date -u +%Y-%m-%d)"
@@ -49,6 +52,7 @@ jobs:
               echo "release_name=Nightly ${today}"
               echo "asset_version=nightly-${today}"
               echo "prerelease=true"
+              echo "previous_tag="
             } >> "${GITHUB_OUTPUT}"
           fi
 
@@ -145,11 +149,14 @@ jobs:
       - name: Publish GitHub release
         uses: ncipollo/release-action@v1
         with:
-          allowUpdates: ${{ needs.metadata.outputs.prerelease }}
+          allowUpdates: true
           artifactErrorsFailBuild: true
           artifacts: dist/*
           generateReleaseNotes: true
+          generateReleaseNotesPreviousTag: ${{ needs.metadata.outputs.previous_tag }}
           name: ${{ needs.metadata.outputs.release_name }}
+          omitBodyDuringUpdate: ${{ needs.metadata.outputs.prerelease != 'true' }}
+          omitNameDuringUpdate: ${{ needs.metadata.outputs.prerelease != 'true' }}
           prerelease: ${{ needs.metadata.outputs.prerelease }}
           removeArtifacts: ${{ needs.metadata.outputs.prerelease }}
           tag: ${{ needs.metadata.outputs.release_tag }}
