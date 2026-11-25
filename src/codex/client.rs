@@ -4,7 +4,7 @@ use crate::{
         chat_stream::chat_chunks,
         convert::to_codex_request,
         events::{collect_output, collect_response_value, normalize_incomplete_result_response},
-        gemini, kiro, sse,
+        kiro, sse,
         upstream::{UpstreamProvider, adapter_for_provider},
     },
     config::{Credentials, Provider, now_unix},
@@ -96,7 +96,6 @@ pub struct CodexClient {
     http: Client,
     base_url: String,
     provider: Provider,
-    gemini_replay: gemini::ReplayCache,
 }
 
 impl CodexClient {
@@ -107,7 +106,6 @@ impl CodexClient {
             http,
             base_url: base_url.into(),
             provider: Provider::Codex,
-            gemini_replay: gemini::ReplayCache::default(),
         }
     }
 
@@ -129,15 +127,7 @@ impl CodexClient {
             http,
             base_url: base_url.into(),
             provider,
-            gemini_replay: gemini::ReplayCache::default(),
         }
-    }
-
-    /// Lists the Gemini models Antigravity currently offers this account.
-    /// # Errors
-    /// Returns an error on missing credentials, rejected discovery, or an empty catalog.
-    pub async fn list_gemini_models(&self, credentials: &Credentials) -> Result<ModelList> {
-        gemini::models::discover(&self.http, &self.base_url, credentials).await
     }
 
     /// Returns the default upstream base URL used by the client.
@@ -181,8 +171,8 @@ impl CodexClient {
         request: crate::openai::types::ChatCompletionRequest,
         credentials: &Credentials,
     ) -> Result<ChatCompletionResponse> {
-        if matches!(self.provider, Provider::Kiro | Provider::Gemini) {
-            return self.complete_adapted_chat(request, credentials).await;
+        if self.provider == Provider::Kiro {
+            return self.complete_kiro_chat(request, credentials).await;
         }
         let id = chat_completion_id();
         let created = now_unix();
@@ -223,8 +213,8 @@ impl CodexClient {
         request: crate::openai::types::ChatCompletionRequest,
         credentials: &Credentials,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<ChatCompletionChunk>> + Send>>> {
-        if matches!(self.provider, Provider::Kiro | Provider::Gemini) {
-            return self.stream_adapted_chat(request, credentials).await;
+        if self.provider == Provider::Kiro {
+            return self.stream_kiro_chat(request, credentials).await;
         }
         let id = chat_completion_id();
         let created = now_unix();
@@ -245,9 +235,6 @@ impl CodexClient {
         request: Value,
         credentials: &Credentials,
     ) -> Result<Value> {
-        if self.provider == Provider::Gemini {
-            return gemini::collect(self.stream_response(request, credentials).await?).await;
-        }
         if self.provider == Provider::Kiro {
             let response = self.send_kiro_body(&request, credentials).await?;
             return kiro::collect_response_value(response, request).await;
@@ -272,22 +259,6 @@ impl CodexClient {
         request: Value,
         credentials: &Credentials,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<crate::codex::sse::JsonSseEvent>> + Send>>> {
-        if self.provider == Provider::Gemini {
-            let response = gemini::send(
-                &self.http,
-                &self.base_url,
-                &request,
-                credentials,
-                &self.gemini_replay,
-            )
-            .await?;
-            return Ok(gemini::events(
-                response,
-                request,
-                crate::oauth::GeminiOAuthClient::project_id(credentials)?.to_owned(),
-                self.gemini_replay.clone(),
-            ));
-        }
         if self.provider == Provider::Kiro {
             let response = self.send_kiro_body(&request, credentials).await?;
             return Ok(kiro::response_event_stream(response, request));
@@ -529,7 +500,7 @@ impl CodexClient {
             .await
     }
 
-    async fn complete_adapted_chat(
+    async fn complete_kiro_chat(
         &self,
         request: crate::openai::types::ChatCompletionRequest,
         credentials: &Credentials,
@@ -538,20 +509,8 @@ impl CodexClient {
         let created = now_unix();
         let model = request.model.clone();
         let body = to_codex_request(&request)?;
-        let output = if self.provider == Provider::Kiro {
-            let response = self.send_kiro_body(&body, credentials).await?;
-            kiro::collect_chat_output(response, body).await?
-        } else {
-            let mut events = self.stream_response(body, credentials).await?;
-            let mut output = crate::codex::events::ChatOutput::default();
-            while let Some(event) = events.next().await {
-                crate::codex::events::apply_event(&mut output, &event?.value)?;
-            }
-            if !output.tool_calls.is_empty() {
-                "tool_calls".clone_into(&mut output.finish_reason);
-            }
-            output
-        };
+        let response = self.send_kiro_body(&body, credentials).await?;
+        let output = kiro::collect_chat_output(response, body).await?;
 
         let usage = output.usage;
         let message = AssistantMessage {
@@ -575,7 +534,7 @@ impl CodexClient {
         })
     }
 
-    async fn stream_adapted_chat(
+    async fn stream_kiro_chat(
         &self,
         request: crate::openai::types::ChatCompletionRequest,
         credentials: &Credentials,
@@ -584,10 +543,9 @@ impl CodexClient {
         let created = now_unix();
         let model = request.model.clone();
         let body = to_codex_request(&request)?;
-        let events = self
-            .stream_response(body, credentials)
-            .await?
-            .map(|event| event.map(|event| event.value));
+        let response = self.send_kiro_body(&body, credentials).await?;
+        let events =
+            kiro::response_event_stream(response, body).map(|event| event.map(|event| event.value));
         Ok(chat_chunks(events, id, created, model))
     }
 

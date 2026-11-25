@@ -1,7 +1,5 @@
 mod callback;
-pub(crate) mod gemini;
 mod grok;
-pub use gemini::GeminiOAuthClient;
 mod kiro;
 mod pkce;
 

@@ -89,13 +89,6 @@ pub fn resolve_model_ids_for_provider(provider: Provider) -> Vec<String> {
         Provider::Grok => GROK_MODELS,
         Provider::Kiro => KIRO_MODELS,
         Provider::Vercel => VERCEL_MODELS,
-        Provider::Gemini => &[
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-3-pro-preview",
-            "gemini-3.1-pro-preview",
-            "gemini-3-flash-preview",
-        ],
     };
     normalize_model_ids(ids.iter().map(ToString::to_string))
 }
@@ -189,19 +182,17 @@ pub fn resolve_model_list_for_provider_with_config(
 
 /// Returns the supported provider implied by a model identifier.
 ///
-/// Models that belonged to the removed Cursor integration return `None` so
-/// callers cannot accidentally route them to a different upstream.
+/// Models that belonged to removed provider integrations (Cursor, Gemini)
+/// return `None` so callers cannot accidentally route them to a different
+/// upstream.
 #[must_use]
 pub fn provider_for_model(model: &str) -> Option<Provider> {
     let normalized = model.strip_prefix("openai-codex/").unwrap_or(model);
-    if removed_cursor_model(normalized) {
+    if removed_provider_model(normalized) {
         return None;
     }
     if is_explicit_vercel_model(normalized) || is_gateway_model(normalized) {
         return Some(Provider::Vercel);
-    }
-    if normalized.starts_with("gemini/") || normalized.starts_with("gemini-") {
-        return Some(Provider::Gemini);
     }
     if normalized.starts_with("kiro/") {
         return Some(Provider::Kiro);
@@ -228,8 +219,12 @@ pub fn provider_for_model(model: &str) -> Option<Provider> {
     }
 }
 
-fn removed_cursor_model(model: &str) -> bool {
-    model.starts_with("cursor/") || model.starts_with("sonnet-") || model == "opus"
+fn removed_provider_model(model: &str) -> bool {
+    model.starts_with("cursor/")
+        || model.starts_with("sonnet-")
+        || model == "opus"
+        || model.starts_with("gemini/")
+        || model.starts_with("gemini-")
 }
 
 /// Returns whether a model id uses rotom's explicit Vercel routing prefix.
@@ -280,7 +275,6 @@ const fn model_owner(provider: Provider) -> &'static str {
         Provider::Grok => "xai",
         Provider::Kiro => "kiro",
         Provider::Vercel => "vercel-ai-gateway",
-        Provider::Gemini => "gemini",
     }
 }
 
@@ -306,7 +300,6 @@ fn normalize_configured_model_ids(provider: Provider, ids: &[String]) -> Vec<Str
         Provider::Grok => &["xai/", "grok/"],
         Provider::Kiro => &["kiro/"],
         Provider::Vercel => &["vercel/"],
-        Provider::Gemini => &["gemini/"],
     };
     // Track names after removing only this provider's local prefix.
     let mut seen = HashSet::new();
@@ -340,7 +333,6 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
         .or_else(|| id.strip_prefix("xai/"))
         .or_else(|| id.strip_prefix("grok/"))
         .or_else(|| id.strip_prefix("kiro/"))
-        .or_else(|| id.strip_prefix("gemini/"))
         .or_else(|| id.strip_prefix("vercel/"))
         .unwrap_or(id);
 
@@ -360,13 +352,6 @@ fn highlight_model_rank(provider: Provider, id: &str) -> Option<ModelRank> {
         }
         Provider::Kiro => kiro_family_rank(normalized)?,
         Provider::Vercel => vercel_family_rank(normalized)?,
-        Provider::Gemini => {
-            if normalized.contains("pro") {
-                90
-            } else {
-                70
-            }
-        }
     };
     let effort = effort_rank(normalized);
 
@@ -506,7 +491,7 @@ fn highlight_score(provider: Provider, major: u16, minor: u16, family: u16, effo
         Provider::Kiro => u32::from(family) * 1_000 + u32::from(major) * 10 + u32::from(minor),
         Provider::Grok => version_score + u32::from(family) * 10 + u32::from(effort),
         // Family strength keeps Astra ahead of Sol despite Sol's newer minor version.
-        Provider::Codex | Provider::Vercel | Provider::Gemini => {
+        Provider::Codex | Provider::Vercel => {
             version_score + u32::from(family) * 200 + u32::from(effort)
         }
     }
@@ -885,6 +870,20 @@ mod tests {
         assert_eq!(provider_for_model("cursor/gpt-5"), None);
         assert_eq!(provider_for_model("sonnet-4"), None);
         assert_eq!(provider_for_model("opus"), None);
+    }
+
+    #[test]
+    fn removed_gemini_models_do_not_route_to_another_provider() {
+        assert_eq!(provider_for_model("gemini-2.5-pro"), None);
+        assert_eq!(provider_for_model("gemini/gemini-2.5-pro"), None);
+        assert_eq!(
+            provider_for_model("google/gemini-4-argon"),
+            Some(Provider::Vercel)
+        );
+        assert_eq!(
+            provider_for_model("google/gemini-2.5-pro"),
+            Some(Provider::Vercel)
+        );
     }
 
     #[test]

@@ -324,8 +324,8 @@ fn model_discovery_formats_friendly_display_names_and_configured_context_windows
             },
             crate::openai::response::ModelObject {
                 object: "model",
-                id: "gemini-2.5-pro".into(),
-                owned_by: "gemini",
+                id: "google/gemini-4-argon".into(),
+                owned_by: "vercel-ai-gateway",
             },
             crate::openai::response::ModelObject {
                 object: "model",
@@ -347,8 +347,8 @@ fn model_discovery_formats_friendly_display_names_and_configured_context_windows
     assert_eq!(find("claude-opus-4-6").context_window, Some(200_000));
     assert_eq!(find("grok-4.7").display_name, "Grok 4.7");
     assert_eq!(find("grok-4.7").context_window, None);
-    assert_eq!(find("gemini-2.5-pro").display_name, "Gemini 2.5 Pro");
-    assert_eq!(find("gemini-2.5-pro").context_window, None);
+    assert_eq!(find("google/gemini-4-argon").display_name, "Gemini 4 Argon");
+    assert_eq!(find("google/gemini-4-argon").context_window, None);
     assert_eq!(find("anthropic/sol").display_name, "Sol");
     assert_eq!(find("anthropic/sol").context_window, Some(1_000_000));
 }

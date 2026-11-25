@@ -444,12 +444,8 @@ fn parses_login_provider_choices() {
         parse_login_provider_choice("vercel").unwrap(),
         Provider::Vercel
     );
-    assert_eq!(parse_login_provider_choice("5").unwrap(), Provider::Gemini);
-    assert_eq!(
-        parse_login_provider_choice("gemini").unwrap(),
-        Provider::Gemini
-    );
-    assert!(parse_login_provider_choice("6").is_err());
+    assert!(parse_login_provider_choice("5").is_err());
+    assert!(parse_login_provider_choice("gemini").is_err());
     assert!(parse_login_provider_choice("cursor").is_err());
 }
 
