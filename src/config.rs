@@ -13,7 +13,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const REMOVED_CURSOR_PROVIDER: &str = "cursor";
+const REMOVED_PROVIDERS: &[&str] = &["cursor", "gemini"];
+
+fn is_removed_provider(provider: &str) -> bool {
+    REMOVED_PROVIDERS.contains(&provider)
+}
 
 /// Upstream credential provider used by stored credentials and runtime requests.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -28,8 +32,6 @@ pub enum Provider {
     Kiro,
     /// Vercel AI Gateway API key backed by the OpenAI-compatible gateway API.
     Vercel,
-    /// Google OAuth backed by the Antigravity subscription service.
-    Gemini,
 }
 
 impl Provider {
@@ -41,7 +43,6 @@ impl Provider {
             Self::Grok => "grok",
             Self::Kiro => "kiro",
             Self::Vercel => "vercel",
-            Self::Gemini => "gemini",
         }
     }
 
@@ -53,7 +54,6 @@ impl Provider {
             Self::Grok => "Grok",
             Self::Kiro => "Kiro",
             Self::Vercel => "Vercel",
-            Self::Gemini => "Gemini",
         }
     }
 
@@ -75,7 +75,6 @@ impl FromStr for Provider {
 
     fn from_str(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "gemini" | "gemini-cli" => Ok(Self::Gemini),
             "codex" | "openai-codex" | "openai" => Ok(Self::Codex),
             "grok" | "xai" | "xai-oauth" | "grok-oauth" => Ok(Self::Grok),
             "kiro" | "kiro-cli" | "kiro-desktop" => Ok(Self::Kiro),
@@ -355,34 +354,38 @@ impl AuthStore {
 fn parse_auth_file(raw: &str) -> Result<AuthFile> {
     let mut value = serde_json::from_str::<serde_json::Value>(raw)?;
     if value.get("providers").is_some() {
-        ignore_removed_provider(&mut value, REMOVED_CURSOR_PROVIDER);
+        ignore_removed_providers(&mut value);
         return serde_json::from_value(value).map_err(Into::into);
     }
-    if value.get("provider").and_then(serde_json::Value::as_str) == Some(REMOVED_CURSOR_PROVIDER) {
+    if value
+        .get("provider")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_removed_provider)
+    {
         return Ok(AuthFile::empty());
     }
     let credentials = serde_json::from_value::<Credentials>(value)?;
     Ok(AuthFile::single(credentials))
 }
 
-fn ignore_removed_provider(value: &mut serde_json::Value, removed_provider: &str) {
+fn ignore_removed_providers(value: &mut serde_json::Value) {
     let Some(file) = value.as_object_mut() else {
         return;
     };
     let active_provider_was_removed = file
         .get("active_provider")
         .and_then(serde_json::Value::as_str)
-        == Some(removed_provider);
+        .is_some_and(is_removed_provider);
     let fallback_provider = file
         .get_mut("providers")
         .and_then(serde_json::Value::as_object_mut)
         .and_then(|providers| {
             providers.retain(|provider, credentials| {
-                provider != removed_provider
+                !is_removed_provider(provider)
                     && credentials
                         .get("provider")
                         .and_then(serde_json::Value::as_str)
-                        != Some(removed_provider)
+                        .is_none_or(|p| !is_removed_provider(p))
             });
             providers.keys().next().cloned()
         });
@@ -485,9 +488,19 @@ impl AppConfigStore {
 
 fn parse_app_config(raw: &str) -> Result<AppConfig> {
     let mut value = serde_json::from_str::<serde_json::Value>(raw)?;
-    if value.get("provider").and_then(serde_json::Value::as_str) == Some(REMOVED_CURSOR_PROVIDER) {
-        if let Some(config) = value.as_object_mut() {
+    if let Some(config) = value.as_object_mut() {
+        if config
+            .get("provider")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(is_removed_provider)
+        {
             config.remove("provider");
+        }
+        if let Some(models) = config
+            .get_mut("models")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            models.retain(|provider, _| !is_removed_provider(provider));
         }
     }
     let config: AppConfig = serde_json::from_value(value)?;
@@ -580,6 +593,12 @@ mod tests {
     #[test]
     fn removed_cursor_provider_is_rejected() {
         assert!(Provider::from_str("cursor").is_err());
+    }
+
+    #[test]
+    fn removed_gemini_provider_is_rejected() {
+        assert!(Provider::from_str("gemini").is_err());
+        assert!(Provider::from_str("gemini-cli").is_err());
     }
 
     #[test]
@@ -695,6 +714,118 @@ mod tests {
         assert_eq!(config.bind_host.as_deref(), Some("127.0.0.1"));
         assert_eq!(config.bind_port, Some(14550));
         assert_eq!(config.provider, None);
+    }
+
+    #[test]
+    fn removed_gemini_credentials_are_ignored_without_hiding_supported_providers() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "version": 2,
+                "active_provider": "gemini",
+                "providers": {
+                    "codex": {
+                        "provider": "codex",
+                        "access_token": "codex-access",
+                        "refresh_token": "codex-refresh",
+                        "expires_at": 123,
+                        "account_id": "codex-account"
+                    },
+                    "gemini": {
+                        "provider": "gemini",
+                        "access_token": "gemini-access",
+                        "refresh_token": "gemini-refresh",
+                        "expires_at": 456,
+                        "account_id": "antigravity:project"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+        let credentials = store.load_all().unwrap();
+
+        assert_eq!(store.load().unwrap().unwrap().provider, Provider::Codex);
+        assert_eq!(credentials.len(), 1);
+        assert_eq!(credentials[0].provider, Provider::Codex);
+    }
+
+    #[test]
+    fn removed_gemini_only_credentials_behave_as_logged_out() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "version": 2,
+                "active_provider": "gemini",
+                "providers": {
+                    "gemini": {
+                        "provider": "gemini",
+                        "access_token": "gemini-access",
+                        "refresh_token": "gemini-refresh",
+                        "expires_at": 456,
+                        "account_id": "antigravity:project"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+
+        assert_eq!(store.load_all().unwrap(), Vec::<Credentials>::new());
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn removed_legacy_gemini_credentials_behave_as_logged_out() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("auth.json");
+        fs::write(
+            &path,
+            r#"{
+                "provider": "gemini",
+                "access_token": "gemini-access",
+                "refresh_token": "gemini-refresh",
+                "expires_at": 456,
+                "account_id": "antigravity:project"
+            }"#,
+        )
+        .unwrap();
+        let store = AuthStore::new(path);
+
+        assert_eq!(store.load_all().unwrap(), Vec::<Credentials>::new());
+        assert_eq!(store.load().unwrap(), None);
+    }
+
+    #[test]
+    fn removed_gemini_runtime_default_and_models_are_ignored() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{
+                "bind_host": "127.0.0.1",
+                "bind_port": 14550,
+                "provider": "gemini",
+                "models": {
+                    "gemini": ["gemini-2.5-pro"],
+                    "codex": ["gpt-6-astra"]
+                }
+            }"#,
+        )
+        .unwrap();
+        let config = AppConfigStore::new(path).load().unwrap().unwrap();
+
+        assert_eq!(config.bind_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(config.bind_port, Some(14550));
+        assert_eq!(config.provider, None);
+        assert_eq!(
+            config.models,
+            BTreeMap::from([(Provider::Codex, vec!["gpt-6-astra".into()])])
+        );
     }
 
     #[test]

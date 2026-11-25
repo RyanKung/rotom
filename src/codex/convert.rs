@@ -69,8 +69,7 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
         });
     }
 
-    let inferred_provider = crate::models::provider_for_model(&request.model);
-    if matches!(inferred_provider, Some(Provider::Gemini | Provider::Vercel)) {
+    if crate::models::provider_for_model(&request.model) == Some(Provider::Vercel) {
         insert_optional(
             &mut body,
             "temperature",
@@ -85,8 +84,6 @@ pub fn to_codex_request(request: &ChatCompletionRequest) -> Result<Value> {
                 .or(request.max_tokens)
                 .map(Value::from),
         );
-    }
-    if inferred_provider == Some(Provider::Vercel) {
         insert_optional(
             &mut body,
             "prompt_cache_retention",
@@ -862,9 +859,7 @@ fn upstream_stream_value(provider: Provider, request: &ResponsesRequest) -> bool
         // Codex currently expects SSE upstream even when the downstream API
         // requested a one-shot JSON response.
         Provider::Codex => true,
-        Provider::Grok | Provider::Kiro | Provider::Vercel | Provider::Gemini => {
-            request.wants_stream()
-        }
+        Provider::Grok | Provider::Kiro | Provider::Vercel => request.wants_stream(),
     }
 }
 
@@ -872,7 +867,7 @@ fn upstream_store_value(provider: Provider, request: &ResponsesRequest, input: &
     match provider {
         Provider::Codex => request.should_store() && !input_requires_stateless_replay(input),
         Provider::Grok | Provider::Vercel => request.should_store(),
-        Provider::Kiro | Provider::Gemini => false,
+        Provider::Kiro => false,
     }
 }
 
@@ -884,7 +879,7 @@ const fn should_include_instructions(
     match provider {
         Provider::Codex => true,
         Provider::Grok => !instructions.is_empty() && request.previous_response_id.is_none(),
-        Provider::Kiro | Provider::Vercel | Provider::Gemini => !instructions.is_empty(),
+        Provider::Kiro | Provider::Vercel => !instructions.is_empty(),
     }
 }
 

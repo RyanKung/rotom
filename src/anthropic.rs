@@ -528,7 +528,6 @@ fn bare_model_slug(value: &str) -> &str {
         .or_else(|| value.strip_prefix("xai/"))
         .or_else(|| value.strip_prefix("grok/"))
         .or_else(|| value.strip_prefix("kiro/"))
-        .or_else(|| value.strip_prefix("gemini/"))
         .or_else(|| value.strip_prefix("vercel/"))
         .unwrap_or(value);
     stripped.rsplit_once('/').map_or(stripped, |(_, slug)| slug)
